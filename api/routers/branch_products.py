@@ -26,6 +26,8 @@ class BranchProductUpdate(BaseModel):
     expiration_date: Optional[date] = None
 
 class BranchProductResponse(BranchProductBase):
+    peso_value: float
+
     class Config:
         from_attributes = True
 

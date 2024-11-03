@@ -17,11 +17,9 @@ class InvReportItemBase(BaseModel):
     beginning: int
     deliver: int
     transfer: int
-    selling_area: int
     pull_out: int
     offtake: int
-    current_cost: float
-    current_srp: float
+    selling_area: int
 
 class InvReportCreate(BaseModel):
     branch_id: int
@@ -29,6 +27,9 @@ class InvReportCreate(BaseModel):
 
 class InvReportItemResponse(InvReportItemBase):
     id: int
+    current_cost: float
+    current_srp: float
+    peso_value: float
 
     class Config:
         from_attributes = True
@@ -52,13 +53,24 @@ def create_inventory_report(
 ):
     new_report = InvReport(branch_id=report.branch_id, date_created=date.today(), last_edit=date.today())
     db.add(new_report)
-    db.flush()  # This assigns an ID to new_report
+    db.flush()
 
     all_items_valid = True
     for item in report.items:
-        report_item = InvReportItem(**item.dict(), invreport_id=new_report.id)
+        product = db.query(Product).filter(Product.id == item.product_id).first()
+        if not product:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Product with id {item.product_id} not found"
+            )
+
+        report_item = InvReportItem(
+            **item.dict(),
+            invreport_id=new_report.id,
+            current_cost=product.cost,
+            current_srp=product.srp
+        )
         
-        # Validate the selling area
         expected_selling_area = (
             item.beginning + item.deliver + item.transfer - item.pull_out - item.offtake
         )
@@ -70,7 +82,6 @@ def create_inventory_report(
     if all_items_valid:
         new_report.status = 'approved'
         
-        # Update BranchProduct quantities only if the report is approved
         for item in report.items:
             branch_product = db.query(BranchProduct).filter(
                 BranchProduct.branch_id == report.branch_id,

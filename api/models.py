@@ -52,6 +52,10 @@ class BranchProduct(Base):
     product = relationship("Product", back_populates="branch_products")
     branch = relationship("Branch", back_populates="branch_products")
 
+    @property
+    def peso_value(self):
+        return self.quantity * self.product.cost
+
 class InvReport(Base):
     __tablename__ = "invreports"
 
@@ -78,6 +82,10 @@ class InvReportItem(Base):
     current_srp = Column(Float)
     invreport = relationship("InvReport", back_populates="items")
     product = relationship("Product", back_populates="inv_report_items")
+
+    @property
+    def peso_value(self):
+        return self.selling_area * self.current_cost
 
 class Expense(Base):
     __tablename__ = "expenses"
