@@ -1,7 +1,7 @@
-from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Table, Float, Date, select
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Table, Float, Date, select, DateTime
 from sqlalchemy.orm import relationship, column_property
 from .database import Base, engine
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 
 
@@ -61,9 +61,9 @@ class InvReport(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     branch_id = Column(Integer, ForeignKey('branches.id'))
-    date_created = Column(Date, default=date.today)
-    last_edit = Column(Date)
-    status = Column(String, default='pending') 
+    created_at = Column(DateTime, default=datetime.now)
+    start_date = Column(Date)
+    end_date = Column(Date)
     items = relationship("InvReportItem", back_populates="invreport")
 
 class InvReportItem(Base):

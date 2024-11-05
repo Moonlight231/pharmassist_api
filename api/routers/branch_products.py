@@ -22,7 +22,6 @@ class BranchProductCreate(BranchProductBase):
     pass
 
 class BranchProductUpdate(BaseModel):
-    quantity: Optional[int] = None
     expiration_date: Optional[date] = None
 
 class BranchProductResponse(BranchProductBase):
