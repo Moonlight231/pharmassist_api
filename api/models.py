@@ -47,14 +47,28 @@ class BranchProduct(Base):
     product_id = Column(Integer, ForeignKey('products.id'), primary_key=True)
     branch_id = Column(Integer, ForeignKey('branches.id'), primary_key=True)
     quantity = Column(Integer)
-    expiration_date = Column(Date)
-
+    
     product = relationship("Product", back_populates="branch_products")
     branch = relationship("Branch", back_populates="branch_products")
+    batches = relationship(
+        "ProductBatch",
+        primaryjoin="and_(BranchProduct.product_id==foreign(ProductBatch.product_id), "
+                   "BranchProduct.branch_id==foreign(ProductBatch.branch_id))",
+        backref="branch_product"
+    )
 
     @property
     def peso_value(self):
         return self.quantity * self.product.cost
+
+    @property
+    def current_expiration_date(self):
+        if not self.batches:
+            return None
+        active_batches = [b for b in self.batches if b.is_active]
+        if not active_batches:
+            return None
+        return min(b.expiration_date for b in active_batches)
 
 class InvReport(Base):
     __tablename__ = "invreports"
@@ -108,6 +122,32 @@ class Supplier(Base):
     email = Column(String)
     address = Column(String)
 
+class ProductBatch(Base):
+    __tablename__ = "product_batches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    branch_id = Column(Integer, ForeignKey('branches.id'))
+    product_id = Column(Integer, ForeignKey('products.id'))
+    lot_number = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False)
+    expiration_date = Column(Date, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    @property
+    def days_until_expiry(self):
+        return (self.expiration_date - date.today()).days
+
+    @property
+    def expiry_status(self):
+        days = self.days_until_expiry
+        if days <= 0:
+            return "expired"
+        elif days <= 30:
+            return "critical"
+        elif days <= 90:
+            return "warning"
+        return "good"
 
 # Create the tables if they don't exist
 User.metadata.create_all(bind=engine)

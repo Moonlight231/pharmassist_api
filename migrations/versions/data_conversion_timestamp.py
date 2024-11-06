@@ -21,7 +21,8 @@ def upgrade() -> None:
     op.execute("""
         UPDATE invreports 
         SET created_at = CURRENT_TIMESTAMP,
-            last_edit = CURRENT_TIMESTAMP 
+            start_date = CURRENT_TIMESTAMP,
+            end_date = CURRENT_TIMESTAMP 
         WHERE created_at IS NULL
     """)
 

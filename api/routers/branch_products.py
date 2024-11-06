@@ -6,6 +6,7 @@ from datetime import date
 
 from api.models import BranchProduct, Branch, Product, UserRole
 from api.deps import db_dependency, role_required
+from sqlalchemy.orm import joinedload
 
 router = APIRouter(
     prefix='/branch-products',
@@ -16,7 +17,6 @@ class BranchProductBase(BaseModel):
     product_id: int
     branch_id: int
     quantity: int
-    expiration_date: Optional[date] = None
 
 class BranchProductCreate(BranchProductBase):
     pass
@@ -26,6 +26,7 @@ class BranchProductUpdate(BaseModel):
 
 class BranchProductResponse(BranchProductBase):
     peso_value: float
+    current_expiration_date: Optional[date]
 
     class Config:
         from_attributes = True
@@ -49,7 +50,9 @@ def get_branch_products(
     branch_id: Optional[int] = None,
     product_id: Optional[int] = None
 ):
-    query = db.query(BranchProduct)
+    query = db.query(BranchProduct).options(
+        joinedload(BranchProduct.batches)
+    )
     
     # If user is a pharmacist, only show their assigned branch
     if user['role'] == UserRole.PHARMACIST.value:
