@@ -87,19 +87,35 @@ class InvReportItem(Base):
     invreport_id = Column(Integer, ForeignKey('invreports.id'))
     product_id = Column(Integer, ForeignKey('products.id'))
     beginning = Column(Integer)
-    deliver = Column(Integer)
-    transfer = Column(Integer)
     selling_area = Column(Integer)
     pull_out = Column(Integer)
     offtake = Column(Integer)
     current_cost = Column(Float)
     current_srp = Column(Float)
+    
     invreport = relationship("InvReport", back_populates="items")
     product = relationship("Product", back_populates="inv_report_items")
+    batches = relationship("InvReportBatch", back_populates="invreport_item")
 
     @property
     def peso_value(self):
         return self.selling_area * self.current_cost
+
+    @property
+    def delivery_batches(self):
+        return [b for b in self.batches if b.batch_type == 'delivery']
+
+    @property
+    def transfer_batches(self):
+        return [b for b in self.batches if b.batch_type == 'transfer']
+
+    @property
+    def deliver(self):
+        return sum(b.quantity for b in self.delivery_batches)
+
+    @property
+    def transfer(self):
+        return sum(b.quantity for b in self.transfer_batches)
 
 class Expense(Base):
     __tablename__ = "expenses"
@@ -148,6 +164,19 @@ class ProductBatch(Base):
         elif days <= 90:
             return "warning"
         return "good"
+
+class InvReportBatch(Base):
+    __tablename__ = "invreport_batches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    invreport_item_id = Column(Integer, ForeignKey('invreport_items.id'))
+    lot_number = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False)
+    expiration_date = Column(Date, nullable=False)
+    batch_type = Column(String)  # 'delivery' or 'transfer'
+    created_at = Column(DateTime, default=datetime.now)
+    
+    invreport_item = relationship("InvReportItem", back_populates="batches")
 
 # Create the tables if they don't exist
 User.metadata.create_all(bind=engine)

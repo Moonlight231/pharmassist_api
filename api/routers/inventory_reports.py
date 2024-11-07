@@ -4,7 +4,7 @@ from typing import List, Optional, Annotated
 from pydantic import BaseModel, computed_field
 from datetime import date, datetime, timedelta
 
-from api.models import InvReport, InvReportItem, BranchProduct, Product, UserRole, ProductBatch
+from api.models import InvReport, InvReportItem, BranchProduct, Product, UserRole, ProductBatch, InvReportBatch
 from api.deps import db_dependency, role_required
 
 router = APIRouter(
@@ -17,15 +17,31 @@ class BatchDeliveryInfo(BaseModel):
     quantity: int
     expiration_date: date
 
+class BatchTransferInfo(BaseModel):
+    lot_number: str
+    quantity: int
+    expiration_date: date
+
 class InvReportItemBase(BaseModel):
     product_id: int
     beginning: int
-    deliver: int
-    transfer: int
     pull_out: int
     offtake: int
     selling_area: int
     delivery_batches: Optional[List[BatchDeliveryInfo]] = None
+    transfer_batches: Optional[List[BatchTransferInfo]] = None
+
+    @computed_field
+    def deliver(self) -> int:
+        if not self.delivery_batches:
+            return 0
+        return sum(batch.quantity for batch in self.delivery_batches)
+
+    @computed_field
+    def transfer(self) -> int:
+        if not self.transfer_batches:
+            return 0
+        return sum(batch.quantity for batch in self.transfer_batches)
 
 class InvReportCreate(BaseModel):
     branch_id: int
@@ -33,19 +49,34 @@ class InvReportCreate(BaseModel):
     end_date: date
     items: List[InvReportItemBase]
 
+class BatchInfo(BaseModel):
+    lot_number: str
+    quantity: int
+    expiration_date: date
+    batch_type: str
+
 class InvReportItemResponse(BaseModel):
     id: int
     product_id: int
     beginning: int
-    deliver: int
-    transfer: int
     pull_out: int
     offtake: int
     selling_area: int
     current_cost: float
     current_srp: float
-    peso_value: float
-    delivery_batches: Optional[List[BatchDeliveryInfo]] = None
+    batches: List[BatchInfo]
+
+    @computed_field
+    def deliver(self) -> int:
+        return sum(b.quantity for b in self.batches if b.batch_type == 'delivery')
+
+    @computed_field
+    def transfer(self) -> int:
+        return sum(b.quantity for b in self.batches if b.batch_type == 'transfer')
+
+    @computed_field
+    def peso_value(self) -> float:
+        return self.selling_area * self.current_srp
 
     class Config:
         from_attributes = True
@@ -67,6 +98,8 @@ class InvReportResponse(BaseModel):
 
 def update_batch_quantities(db: Session, branch_id: int, product_id: int, used_quantity: int):
     remaining = used_quantity
+    
+    # Get all active batches including newly added ones
     batches = (db.query(ProductBatch)
         .filter(
             ProductBatch.branch_id == branch_id,
@@ -76,7 +109,28 @@ def update_batch_quantities(db: Session, branch_id: int, product_id: int, used_q
         .order_by(ProductBatch.expiration_date)
         .all())
 
-    for batch in batches:
+    # Get pending batches from the current transaction
+    pending_batches = [
+        obj for obj in db.new 
+        if isinstance(obj, ProductBatch) 
+        and obj.branch_id == branch_id 
+        and obj.product_id == product_id
+    ]
+    
+    # Combine and sort all batches by expiration date
+    all_batches = sorted(batches + pending_batches, key=lambda x: x.expiration_date)
+    
+    # Calculate total available quantity
+    total_available = sum(batch.quantity for batch in all_batches)
+    
+    if total_available < used_quantity:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient quantity available. Required: {used_quantity}, Available: {total_available}"
+        )
+
+    # Process all batches in order of expiration date
+    for batch in all_batches:
         if batch.quantity <= remaining:
             remaining -= batch.quantity
             batch.is_active = False
@@ -84,11 +138,43 @@ def update_batch_quantities(db: Session, branch_id: int, product_id: int, used_q
             batch.quantity -= remaining
             break
 
-    if remaining > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Insufficient quantity available"
+def process_batch(db: Session, branch_id: int, product_id: int, batch_info: BatchDeliveryInfo | BatchTransferInfo, current_time: datetime):
+    """Process a single batch delivery or transfer"""
+    # First save to InvReportBatch - this preserves the original entry
+    new_report_batch = InvReportBatch(
+        lot_number=batch_info.lot_number,
+        quantity=batch_info.quantity,
+        expiration_date=batch_info.expiration_date,
+        batch_type='delivery' if isinstance(batch_info, BatchDeliveryInfo) else 'transfer',
+        created_at=current_time
+    )
+    db.add(new_report_batch)
+
+    # Then handle ProductBatch - merge quantities for same lot number
+    existing_batch = db.query(ProductBatch).filter(
+        ProductBatch.branch_id == branch_id,
+        ProductBatch.product_id == product_id,
+        ProductBatch.lot_number == batch_info.lot_number,
+        ProductBatch.is_active == True
+    ).first()
+
+    if existing_batch:
+        if existing_batch.expiration_date != batch_info.expiration_date:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Expiration date mismatch for lot number {batch_info.lot_number}"
+            )
+        existing_batch.quantity += batch_info.quantity
+    else:
+        new_batch = ProductBatch(
+            branch_id=branch_id,
+            product_id=product_id,
+            lot_number=batch_info.lot_number,
+            quantity=batch_info.quantity,
+            expiration_date=batch_info.expiration_date,
+            created_at=current_time
         )
+        db.add(new_batch)
 
 @router.post('/', response_model=InvReportResponse, status_code=status.HTTP_201_CREATED)
 def create_inventory_report(
@@ -97,6 +183,8 @@ def create_inventory_report(
     user: Annotated[dict, Depends(role_required(UserRole.PHARMACIST))]
 ):
     current_time = datetime.now()
+    
+    # Create report
     new_report = InvReport(
         branch_id=report.branch_id,
         created_at=current_time,
@@ -104,83 +192,119 @@ def create_inventory_report(
         end_date=report.end_date
     )
     db.add(new_report)
-    db.flush()
-
-    for item in report.items:
-        product = db.query(Product).filter(Product.id == item.product_id).first()
+    
+    # Process each item
+    for item_data in report.items:
+        # Get product info
+        product = db.query(Product).get(item_data.product_id)
         if not product:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Product with id {item.product_id} not found"
-            )
-
-        # Exclude delivery_batches from the dictionary
-        item_dict = item.dict(exclude={'delivery_batches'})
+            raise HTTPException(status_code=404, detail=f"Product {item_data.product_id} not found")
         
+        # Create report item
         report_item = InvReportItem(
-            **item_dict,
-            invreport_id=new_report.id,
+            product_id=item_data.product_id,
+            beginning=item_data.beginning,
+            pull_out=item_data.pull_out,
+            offtake=item_data.offtake,
+            selling_area=item_data.selling_area,
             current_cost=product.cost,
             current_srp=product.srp
         )
-        db.add(report_item)
-
-        # Update branch products directly
-        branch_product = db.query(BranchProduct).filter(
-            BranchProduct.branch_id == report.branch_id,
-            BranchProduct.product_id == item.product_id
-        ).first()
-
-        if branch_product:
-            branch_product.quantity = item.selling_area
-        else:
-            new_branch_product = BranchProduct(
-                branch_id=report.branch_id,
-                product_id=item.product_id,
-                quantity=item.selling_area
-            )
-            db.add(new_branch_product)
-
-        if item.deliver > 0 and item.delivery_batches:
-            total_delivered = sum(batch.quantity for batch in item.delivery_batches)
-            if total_delivered != item.deliver:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Sum of batch quantities must equal total delivery amount"
+        new_report.items.append(report_item)
+        
+        # Process delivery batches
+        if item_data.delivery_batches:
+            for batch in item_data.delivery_batches:
+                # Save to InvReportBatch
+                report_batch = InvReportBatch(
+                    lot_number=batch.lot_number,
+                    quantity=batch.quantity,
+                    expiration_date=batch.expiration_date,
+                    batch_type='delivery',
+                    created_at=current_time
                 )
-            
-            for batch_info in item.delivery_batches:
+                report_item.batches.append(report_batch)
+                
+                # Update ProductBatch
                 existing_batch = db.query(ProductBatch).filter(
                     ProductBatch.branch_id == report.branch_id,
-                    ProductBatch.product_id == item.product_id,
-                    ProductBatch.lot_number == batch_info.lot_number,
+                    ProductBatch.product_id == item_data.product_id,
+                    ProductBatch.lot_number == batch.lot_number,
                     ProductBatch.is_active == True
                 ).first()
-
+                
                 if existing_batch:
-                    if existing_batch.expiration_date != batch_info.expiration_date:
+                    if existing_batch.expiration_date != batch.expiration_date:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Expiration date mismatch for lot number {batch_info.lot_number}"
+                            detail=f"Expiration date mismatch for lot number {batch.lot_number}"
                         )
-                    existing_batch.quantity += batch_info.quantity
+                    existing_batch.quantity += batch.quantity
                 else:
                     new_batch = ProductBatch(
                         branch_id=report.branch_id,
-                        product_id=item.product_id,
-                        lot_number=batch_info.lot_number,
-                        quantity=batch_info.quantity,
-                        expiration_date=batch_info.expiration_date
+                        product_id=item_data.product_id,
+                        lot_number=batch.lot_number,
+                        quantity=batch.quantity,
+                        expiration_date=batch.expiration_date,
+                        created_at=current_time
                     )
                     db.add(new_batch)
+        
+        # Process transfer batches - similar logic
+        if item_data.transfer_batches:
+            for batch in item_data.transfer_batches:
+                # Save to InvReportBatch
+                report_batch = InvReportBatch(
+                    lot_number=batch.lot_number,
+                    quantity=batch.quantity,
+                    expiration_date=batch.expiration_date,
+                    batch_type='transfer',
+                    created_at=current_time
+                )
+                report_item.batches.append(report_batch)
+                
+                # Update ProductBatch
+                existing_batch = db.query(ProductBatch).filter(
+                    ProductBatch.branch_id == report.branch_id,
+                    ProductBatch.product_id == item_data.product_id,
+                    ProductBatch.lot_number == batch.lot_number,
+                    ProductBatch.is_active == True
+                ).first()
+                
+                if existing_batch:
+                    if existing_batch.expiration_date != batch.expiration_date:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Expiration date mismatch for lot number {batch.lot_number}"
+                        )
+                    existing_batch.quantity += batch.quantity
+                else:
+                    new_batch = ProductBatch(
+                        branch_id=report.branch_id,
+                        product_id=item_data.product_id,
+                        lot_number=batch.lot_number,
+                        quantity=batch.quantity,
+                        expiration_date=batch.expiration_date,
+                        created_at=current_time
+                    )
+                    db.add(new_batch)
+    
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
-        total_usage = item.offtake + item.transfer + item.pull_out
-        if total_usage > 0:
-            update_batch_quantities(db, report.branch_id, item.product_id, total_usage)
-
-    db.commit()
-    db.refresh(new_report)
-    return new_report
+    # Fetch complete report
+    complete_report = (
+        db.query(InvReport)
+        .options(joinedload(InvReport.items).joinedload(InvReportItem.batches))
+        .filter(InvReport.id == new_report.id)
+        .first()
+    )
+    
+    return complete_report
 
 @router.get('/{report_id}', response_model=InvReportResponse)
 def get_inventory_report(
@@ -188,31 +312,20 @@ def get_inventory_report(
     db: db_dependency,
     user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))]
 ):
-    report = db.query(InvReport).options(joinedload(InvReport.items)).filter(InvReport.id == report_id).first()
+    report = (
+        db.query(InvReport)
+        .options(
+            joinedload(InvReport.items)
+            .joinedload(InvReportItem.batches)
+        )
+        .filter(InvReport.id == report_id)
+        .first()
+    )
+    
     if not report:
         raise HTTPException(status_code=404, detail="Inventory report not found")
     
-    # Get batches created during this report
-    for item in report.items:
-        batches = db.query(ProductBatch).filter(
-            ProductBatch.branch_id == report.branch_id,
-            ProductBatch.product_id == item.product_id,
-            ProductBatch.created_at >= report.created_at,
-            ProductBatch.created_at <= report.created_at + timedelta(minutes=1)
-        ).all()
-        
-        item.delivery_batches = [
-            BatchDeliveryInfo(
-                lot_number=batch.lot_number,
-                quantity=batch.quantity,
-                expiration_date=batch.expiration_date
-            )
-            for batch in batches
-        ]
-
     return report
-
-from typing import List, Optional
 
 @router.get('/', response_model=List[InvReportResponse])
 def get_all_inventory_reports(
@@ -221,30 +334,17 @@ def get_all_inventory_reports(
     skip: int = 0,
     limit: int = 100
 ):
-    reports = (db.query(InvReport)
-        .options(joinedload(InvReport.items))
+    reports = (
+        db.query(InvReport)
+        .options(
+            joinedload(InvReport.items)
+            .joinedload(InvReportItem.batches)
+        )
+        .order_by(InvReport.created_at.desc())
         .offset(skip)
         .limit(limit)
-        .all())
-    
-    # Add delivery batches info
-    for report in reports:
-        for item in report.items:
-            batches = db.query(ProductBatch).filter(
-                ProductBatch.branch_id == report.branch_id,
-                ProductBatch.product_id == item.product_id,
-                ProductBatch.created_at >= report.created_at,
-                ProductBatch.created_at <= report.created_at + timedelta(minutes=1)
-            ).all()
-            
-            item.delivery_batches = [
-                BatchDeliveryInfo(
-                    lot_number=batch.lot_number,
-                    quantity=batch.quantity,
-                    expiration_date=batch.expiration_date
-                )
-                for batch in batches
-            ]
+        .all()
+    )
     
     return reports
 
@@ -256,7 +356,19 @@ def get_branch_inventory_reports(
     skip: int = 0,
     limit: int = 100
 ):
-    reports = db.query(InvReport).filter(InvReport.branch_id == branch_id).offset(skip).limit(limit).all()
+    reports = (
+        db.query(InvReport)
+        .options(
+            joinedload(InvReport.items)
+            .joinedload(InvReportItem.batches)
+        )
+        .filter(InvReport.branch_id == branch_id)
+        .order_by(InvReport.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    
     return reports
 
 class ExpiringBatchItem(BaseModel):
@@ -304,37 +416,28 @@ def get_branch_expiring_batches(
         .order_by(ProductBatch.expiration_date)
         .all())
 
+    # Group batches by product_id, lot_number, and expiration_date
+    batch_groups = {}
+    for batch in batches:
+        key = (batch.product_id, batch.lot_number, batch.expiration_date)
+        if key not in batch_groups:
+            batch_groups[key] = {
+                "product_id": batch.product_id,
+                "lot_number": batch.lot_number,
+                "quantity": batch.quantity,
+                "expiration_date": batch.expiration_date.isoformat(),
+                "days_until_expiry": batch.days_until_expiry,
+                "status": batch.expiry_status
+            }
+        else:
+            batch_groups[key]["quantity"] += batch.quantity
+
+    combined_batches = list(batch_groups.values())
+
     return {
-        "expired": [
-            {
-                "product_id": batch.product_id,
-                "lot_number": batch.lot_number,
-                "quantity": batch.quantity,
-                "expiration_date": batch.expiration_date.isoformat(),
-                "days_until_expiry": batch.days_until_expiry
-            }
-            for batch in batches if batch.expiry_status == "expired"
-        ],
-        "critical": [
-            {
-                "product_id": batch.product_id,
-                "lot_number": batch.lot_number,
-                "quantity": batch.quantity,
-                "expiration_date": batch.expiration_date.isoformat(),
-                "days_until_expiry": batch.days_until_expiry
-            }
-            for batch in batches if batch.expiry_status == "critical"
-        ],
-        "warning": [
-            {
-                "product_id": batch.product_id,
-                "lot_number": batch.lot_number,
-                "quantity": batch.quantity,
-                "expiration_date": batch.expiration_date.isoformat(),
-                "days_until_expiry": batch.days_until_expiry
-            }
-            for batch in batches if batch.expiry_status == "warning"
-        ]
+        "expired": [b for b in combined_batches if b["status"] == "expired"],
+        "critical": [b for b in combined_batches if b["status"] == "critical"],
+        "warning": [b for b in combined_batches if b["status"] == "warning"]
     }
 
 @router.get('/product-batches/{branch_id}/{product_id}', response_model=ProductBatchesResponse)
@@ -354,22 +457,31 @@ def get_product_batches(
         .order_by(ProductBatch.expiration_date)
         .all())
 
-    return {
-        "product_id": product_id,
-        "batches": [
-            {
+    # Group batches by lot number and expiration date
+    batch_groups = {}
+    for batch in batches:
+        key = (batch.lot_number, batch.expiration_date)
+        if key not in batch_groups:
+            batch_groups[key] = {
                 "lot_number": batch.lot_number,
                 "quantity": batch.quantity,
                 "expiration_date": batch.expiration_date.isoformat(),
                 "days_until_expiry": batch.days_until_expiry,
                 "status": batch.expiry_status,
             }
-            for batch in batches
-        ],
+        else:
+            batch_groups[key]["quantity"] += batch.quantity
+
+    combined_batches = list(batch_groups.values())
+    combined_batches.sort(key=lambda x: x["expiration_date"])
+
+    return {
+        "product_id": product_id,
+        "batches": combined_batches,
         "summary": {
-            "total_quantity": sum(batch.quantity for batch in batches),
-            "expired": sum(1 for batch in batches if batch.expiry_status == "expired"),
-            "critical": sum(1 for batch in batches if batch.expiry_status == "critical"),
-            "warning": sum(1 for batch in batches if batch.expiry_status == "warning")
+            "total_quantity": sum(b["quantity"] for b in combined_batches),
+            "expired": sum(1 for b in combined_batches if b["status"] == "expired"),
+            "critical": sum(1 for b in combined_batches if b["status"] == "critical"),
+            "warning": sum(1 for b in combined_batches if b["status"] == "warning")
         }
     }
