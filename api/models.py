@@ -88,7 +88,6 @@ class InvReportItem(Base):
     product_id = Column(Integer, ForeignKey('products.id'))
     beginning = Column(Integer)
     selling_area = Column(Integer)
-    pull_out = Column(Integer)
     offtake = Column(Integer)
     current_cost = Column(Float)
     current_srp = Column(Float)
@@ -108,6 +107,14 @@ class InvReportItem(Base):
     @property
     def transfer_batches(self):
         return [b for b in self.batches if b.batch_type == 'transfer']
+
+    @property
+    def pull_out_batches(self):
+        return [b for b in self.batches if b.batch_type == 'pull_out']
+
+    @property
+    def pull_out(self):
+        return sum(b.quantity for b in self.pull_out_batches)
 
     @property
     def deliver(self):

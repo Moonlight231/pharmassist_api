@@ -22,14 +22,24 @@ class BatchTransferInfo(BaseModel):
     quantity: int
     expiration_date: date
 
+class PullOutBatchInfo(BaseModel):
+    lot_number: str
+    quantity: int
+
 class InvReportItemBase(BaseModel):
     product_id: int
     beginning: int
-    pull_out: int
     offtake: int
     selling_area: int
+    pull_out_batches: Optional[List[PullOutBatchInfo]] = None
     delivery_batches: Optional[List[BatchDeliveryInfo]] = None
     transfer_batches: Optional[List[BatchTransferInfo]] = None
+
+    @computed_field
+    def pull_out(self) -> int:
+        if not self.pull_out_batches:
+            return 0
+        return sum(batch.quantity for batch in self.pull_out_batches)
 
     @computed_field
     def deliver(self) -> int:
@@ -55,11 +65,13 @@ class BatchInfo(BaseModel):
     expiration_date: date
     batch_type: str
 
+    class Config:
+        from_attributes = True
+
 class InvReportItemResponse(BaseModel):
     id: int
     product_id: int
     beginning: int
-    pull_out: int
     offtake: int
     selling_area: int
     current_cost: float
@@ -75,11 +87,12 @@ class InvReportItemResponse(BaseModel):
         return sum(b.quantity for b in self.batches if b.batch_type == 'transfer')
 
     @computed_field
+    def pull_out(self) -> int:
+        return sum(b.quantity for b in self.batches if b.batch_type == 'pull_out')
+
+    @computed_field
     def peso_value(self) -> float:
         return self.selling_area * self.current_srp
-
-    class Config:
-        from_attributes = True
 
 class InvReportResponse(BaseModel):
     id: int
@@ -204,7 +217,6 @@ def create_inventory_report(
         report_item = InvReportItem(
             product_id=item_data.product_id,
             beginning=item_data.beginning,
-            pull_out=item_data.pull_out,
             offtake=item_data.offtake,
             selling_area=item_data.selling_area,
             current_cost=product.cost,
@@ -289,6 +301,42 @@ def create_inventory_report(
                         created_at=current_time
                     )
                     db.add(new_batch)
+        
+        # Process pull-out batches
+        if item_data.pull_out_batches:
+            for batch in item_data.pull_out_batches:
+                # Get existing batch to get its expiration date
+                existing_batch = db.query(ProductBatch).filter(
+                    ProductBatch.branch_id == report.branch_id,
+                    ProductBatch.product_id == item_data.product_id,
+                    ProductBatch.lot_number == batch.lot_number,
+                    ProductBatch.is_active == True
+                ).first()
+                
+                if not existing_batch:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Batch with lot number {batch.lot_number} not found"
+                    )
+                
+                if existing_batch.quantity < batch.quantity:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Insufficient quantity in batch {batch.lot_number}"
+                    )
+                
+                # Save to InvReportBatch with expiration date from existing batch
+                report_batch = InvReportBatch(
+                    lot_number=batch.lot_number,
+                    quantity=batch.quantity,
+                    expiration_date=existing_batch.expiration_date,
+                    batch_type='pull_out',
+                    created_at=current_time
+                )
+                report_item.batches.append(report_batch)
+                
+                # Update existing batch quantity
+                existing_batch.quantity -= batch.quantity
     
     try:
         db.commit()
