@@ -168,7 +168,6 @@ class ProductBatch(Base):
     id = Column(Integer, primary_key=True, index=True)
     branch_id = Column(Integer, ForeignKey('branches.id'))
     product_id = Column(Integer, ForeignKey('products.id'))
-    lot_number = Column(String, nullable=False)
     quantity = Column(Integer, nullable=False)
     expiration_date = Column(Date, nullable=False)
     is_active = Column(Boolean, default=True)
@@ -194,10 +193,9 @@ class InvReportBatch(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     invreport_item_id = Column(Integer, ForeignKey('invreport_items.id'))
-    lot_number = Column(String, nullable=False)
     quantity = Column(Integer, nullable=False)
     expiration_date = Column(Date, nullable=False)
-    batch_type = Column(String)  # 'delivery' or 'transfer'
+    batch_type = Column(String)  # 'delivery', 'transfer', or 'pull_out'
     created_at = Column(DateTime, default=datetime.now)
     
     invreport_item = relationship("InvReportItem", back_populates="batches")

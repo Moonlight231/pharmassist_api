@@ -14,18 +14,36 @@ router = APIRouter(
 )
 
 class BatchDeliveryInfo(BaseModel):
-    lot_number: str
     quantity: int
     expiration_date: date
 
 class BatchTransferInfo(BaseModel):
-    lot_number: str
     quantity: int
     expiration_date: date
 
 class PullOutBatchInfo(BaseModel):
-    lot_number: str
     quantity: int
+    expiration_date: date
+
+class ExpiringBatchItem(BaseModel):
+    product_id: int
+    quantity: int
+    expiration_date: str
+    days_until_expiry: int
+
+class ProductBatchItem(BaseModel):
+    quantity: int
+    expiration_date: str
+    days_until_expiry: int
+    status: str
+
+class BatchInfo(BaseModel):
+    quantity: int
+    expiration_date: date
+    batch_type: str
+
+    class Config:
+        from_attributes = True
 
 class InvReportItemBase(BaseModel):
     product_id: int
@@ -59,15 +77,6 @@ class InvReportCreate(BaseModel):
     start_date: date
     end_date: date
     items: List[InvReportItemBase]
-
-class BatchInfo(BaseModel):
-    lot_number: str
-    quantity: int
-    expiration_date: date
-    batch_type: str
-
-    class Config:
-        from_attributes = True
 
 class InvReportItemResponse(BaseModel):
     id: int
@@ -154,9 +163,8 @@ def update_batch_quantities(db: Session, branch_id: int, product_id: int, used_q
 
 def process_batch(db: Session, branch_id: int, product_id: int, batch_info: BatchDeliveryInfo | BatchTransferInfo, current_time: datetime):
     """Process a single batch delivery or transfer"""
-    # First save to InvReportBatch - this preserves the original entry
+    # First save to InvReportBatch
     new_report_batch = InvReportBatch(
-        lot_number=batch_info.lot_number,
         quantity=batch_info.quantity,
         expiration_date=batch_info.expiration_date,
         batch_type='delivery' if isinstance(batch_info, BatchDeliveryInfo) else 'transfer',
@@ -164,26 +172,20 @@ def process_batch(db: Session, branch_id: int, product_id: int, batch_info: Batc
     )
     db.add(new_report_batch)
 
-    # Then handle ProductBatch - merge quantities for same lot number
+    # Then handle ProductBatch - merge quantities for same expiration date
     existing_batch = db.query(ProductBatch).filter(
         ProductBatch.branch_id == branch_id,
         ProductBatch.product_id == product_id,
-        ProductBatch.lot_number == batch_info.lot_number,
+        ProductBatch.expiration_date == batch_info.expiration_date,
         ProductBatch.is_active == True
     ).first()
 
     if existing_batch:
-        if existing_batch.expiration_date != batch_info.expiration_date:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Expiration date mismatch for lot number {batch_info.lot_number}"
-            )
         existing_batch.quantity += batch_info.quantity
     else:
         new_batch = ProductBatch(
             branch_id=branch_id,
             product_id=product_id,
-            lot_number=batch_info.lot_number,
             quantity=batch_info.quantity,
             expiration_date=batch_info.expiration_date,
             created_at=current_time
@@ -191,7 +193,7 @@ def process_batch(db: Session, branch_id: int, product_id: int, batch_info: Batc
         db.add(new_batch)
 
 def update_branch_product_quantity(db: Session, branch_id: int, product_id: int):
-    """Update branch product quantity to match sum of active batch quantities"""
+    """Update branch product quantity to match sum of active batches"""
     total_quantity = db.query(sa.func.sum(ProductBatch.quantity))\
         .filter(
             ProductBatch.branch_id == branch_id,
@@ -248,7 +250,6 @@ def create_inventory_report(
             for batch in item_data.delivery_batches:
                 # Save to InvReportBatch
                 report_batch = InvReportBatch(
-                    lot_number=batch.lot_number,
                     quantity=batch.quantity,
                     expiration_date=batch.expiration_date,
                     batch_type='delivery',
@@ -260,22 +261,16 @@ def create_inventory_report(
                 existing_batch = db.query(ProductBatch).filter(
                     ProductBatch.branch_id == report.branch_id,
                     ProductBatch.product_id == item_data.product_id,
-                    ProductBatch.lot_number == batch.lot_number,
+                    ProductBatch.expiration_date == batch.expiration_date,
                     ProductBatch.is_active == True
                 ).first()
                 
                 if existing_batch:
-                    if existing_batch.expiration_date != batch.expiration_date:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Expiration date mismatch for lot number {batch.lot_number}"
-                        )
                     existing_batch.quantity += batch.quantity
                 else:
                     new_batch = ProductBatch(
                         branch_id=report.branch_id,
                         product_id=item_data.product_id,
-                        lot_number=batch.lot_number,
                         quantity=batch.quantity,
                         expiration_date=batch.expiration_date,
                         created_at=current_time
@@ -287,7 +282,6 @@ def create_inventory_report(
             for batch in item_data.transfer_batches:
                 # Save to InvReportBatch
                 report_batch = InvReportBatch(
-                    lot_number=batch.lot_number,
                     quantity=batch.quantity,
                     expiration_date=batch.expiration_date,
                     batch_type='transfer',
@@ -299,22 +293,16 @@ def create_inventory_report(
                 existing_batch = db.query(ProductBatch).filter(
                     ProductBatch.branch_id == report.branch_id,
                     ProductBatch.product_id == item_data.product_id,
-                    ProductBatch.lot_number == batch.lot_number,
+                    ProductBatch.expiration_date == batch.expiration_date,
                     ProductBatch.is_active == True
                 ).first()
                 
                 if existing_batch:
-                    if existing_batch.expiration_date != batch.expiration_date:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Expiration date mismatch for lot number {batch.lot_number}"
-                        )
                     existing_batch.quantity += batch.quantity
                 else:
                     new_batch = ProductBatch(
                         branch_id=report.branch_id,
                         product_id=item_data.product_id,
-                        lot_number=batch.lot_number,
                         quantity=batch.quantity,
                         expiration_date=batch.expiration_date,
                         created_at=current_time
@@ -328,25 +316,24 @@ def create_inventory_report(
                 existing_batch = db.query(ProductBatch).filter(
                     ProductBatch.branch_id == report.branch_id,
                     ProductBatch.product_id == item_data.product_id,
-                    ProductBatch.lot_number == batch.lot_number,
+                    ProductBatch.expiration_date == batch.expiration_date,
                     ProductBatch.is_active == True
                 ).first()
                 
                 if not existing_batch:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Batch with lot number {batch.lot_number} not found"
+                        detail=f"Batch with expiration date {batch.expiration_date} not found"
                     )
                 
                 if existing_batch.quantity < batch.quantity:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Insufficient quantity in batch {batch.lot_number}"
+                        detail=f"Insufficient quantity in batch with expiration date {batch.expiration_date}"
                     )
                 
                 # Save to InvReportBatch with expiration date from existing batch
                 report_batch = InvReportBatch(
-                    lot_number=batch.lot_number,
                     quantity=batch.quantity,
                     expiration_date=existing_batch.expiration_date,
                     batch_type='pull_out',
@@ -356,6 +343,9 @@ def create_inventory_report(
                 
                 # Update existing batch quantity
                 existing_batch.quantity -= batch.quantity
+    
+        # After processing all batches for this item
+        update_branch_product_quantity(db, report.branch_id, item_data.product_id)
     
     try:
         db.commit()
@@ -438,20 +428,6 @@ def get_branch_inventory_reports(
     
     return reports
 
-class ExpiringBatchItem(BaseModel):
-    product_id: int
-    lot_number: str
-    quantity: int
-    expiration_date: str
-    days_until_expiry: int
-
-class ProductBatchItem(BaseModel):
-    lot_number: str
-    quantity: int
-    expiration_date: str
-    days_until_expiry: int
-    status: str
-
 class ProductBatchSummary(BaseModel):
     total_quantity: int
     expired: int
@@ -483,14 +459,13 @@ def get_branch_expiring_batches(
         .order_by(ProductBatch.expiration_date)
         .all())
 
-    # Group batches by product_id, lot_number, and expiration_date
+    # Group batches by product_id and expiration_date only
     batch_groups = {}
     for batch in batches:
-        key = (batch.product_id, batch.lot_number, batch.expiration_date)
+        key = (batch.product_id, batch.expiration_date)
         if key not in batch_groups:
             batch_groups[key] = {
                 "product_id": batch.product_id,
-                "lot_number": batch.lot_number,
                 "quantity": batch.quantity,
                 "expiration_date": batch.expiration_date.isoformat(),
                 "days_until_expiry": batch.days_until_expiry,
@@ -524,13 +499,12 @@ def get_product_batches(
         .order_by(ProductBatch.expiration_date)
         .all())
 
-    # Group batches by lot number and expiration date
+    # Group batches by expiration date only
     batch_groups = {}
     for batch in batches:
-        key = (batch.lot_number, batch.expiration_date)
+        key = batch.expiration_date
         if key not in batch_groups:
             batch_groups[key] = {
-                "lot_number": batch.lot_number,
                 "quantity": batch.quantity,
                 "expiration_date": batch.expiration_date.isoformat(),
                 "days_until_expiry": batch.days_until_expiry,
