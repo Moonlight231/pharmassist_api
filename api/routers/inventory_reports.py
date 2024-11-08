@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
+import sqlalchemy as sa
 from typing import List, Optional, Annotated
 from pydantic import BaseModel, computed_field
 from datetime import date, datetime, timedelta
@@ -188,6 +189,24 @@ def process_batch(db: Session, branch_id: int, product_id: int, batch_info: Batc
             created_at=current_time
         )
         db.add(new_batch)
+
+def update_branch_product_quantity(db: Session, branch_id: int, product_id: int):
+    """Update branch product quantity to match sum of active batch quantities"""
+    total_quantity = db.query(sa.func.sum(ProductBatch.quantity))\
+        .filter(
+            ProductBatch.branch_id == branch_id,
+            ProductBatch.product_id == product_id,
+            ProductBatch.is_active == True
+        ).scalar() or 0
+    
+    branch_product = db.query(BranchProduct)\
+        .filter(
+            BranchProduct.branch_id == branch_id,
+            BranchProduct.product_id == product_id
+        ).first()
+    
+    if branch_product:
+        branch_product.quantity = total_quantity
 
 @router.post('/', response_model=InvReportResponse, status_code=status.HTTP_201_CREATED)
 def create_inventory_report(

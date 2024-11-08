@@ -3,6 +3,8 @@ from sqlalchemy.orm import relationship, column_property
 from .database import Base, engine
 from datetime import date, datetime
 from enum import Enum
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 
 class UserRole(str, Enum):
@@ -114,15 +116,30 @@ class InvReportItem(Base):
 
     @property
     def pull_out(self):
-        return sum(b.quantity for b in self.pull_out_batches)
+        session = Session.object_session(self)
+        return session.query(func.sum(InvReportBatch.quantity))\
+            .filter(
+                InvReportBatch.invreport_item_id == self.id,
+                InvReportBatch.batch_type == 'pull_out'
+            ).scalar() or 0
 
     @property
     def deliver(self):
-        return sum(b.quantity for b in self.delivery_batches)
+        session = Session.object_session(self)
+        return session.query(func.sum(InvReportBatch.quantity))\
+            .filter(
+                InvReportBatch.invreport_item_id == self.id,
+                InvReportBatch.batch_type == 'delivery'
+            ).scalar() or 0
 
     @property
     def transfer(self):
-        return sum(b.quantity for b in self.transfer_batches)
+        session = Session.object_session(self)
+        return session.query(func.sum(InvReportBatch.quantity))\
+            .filter(
+                InvReportBatch.invreport_item_id == self.id,
+                InvReportBatch.batch_type == 'transfer'
+            ).scalar() or 0
 
 class Expense(Base):
     __tablename__ = "expenses"
