@@ -7,6 +7,8 @@ from datetime import date
 from api.models import BranchProduct, Branch, Product, UserRole
 from api.deps import db_dependency, role_required
 from sqlalchemy.orm import joinedload
+import sqlalchemy as sa
+from api.models import ProductBatch
 
 router = APIRouter(
     prefix='/branch-products',
@@ -50,21 +52,50 @@ def get_branch_products(
     branch_id: Optional[int] = None,
     product_id: Optional[int] = None
 ):
+    # First get active batches with their quantities
+    batch_totals = db.query(
+        ProductBatch.branch_id,
+        ProductBatch.product_id,
+        sa.func.sum(ProductBatch.quantity).label('total_quantity')
+    ).filter(
+        ProductBatch.is_active == True
+    ).group_by(
+        ProductBatch.branch_id,
+        ProductBatch.product_id
+    ).subquery()
+    
+    # Join with branch products
     query = db.query(BranchProduct).options(
         joinedload(BranchProduct.batches)
+    ).outerjoin(
+        batch_totals,
+        sa.and_(
+            BranchProduct.branch_id == batch_totals.c.branch_id,
+            BranchProduct.product_id == batch_totals.c.product_id
+        )
     )
     
-    # If user is a pharmacist, only show their assigned branch
+    # Apply filters
     if user['role'] == UserRole.PHARMACIST.value:
         query = query.filter(BranchProduct.branch_id == user['branch_id'])
-    # If admin specifies a branch, filter by it
     elif branch_id:
         query = query.filter(BranchProduct.branch_id == branch_id)
         
     if product_id:
         query = query.filter(BranchProduct.product_id == product_id)
     
-    return query.all()
+    branch_products = query.all()
+    
+    # Update quantities from the subquery results
+    for bp in branch_products:
+        bp.quantity = db.query(sa.func.sum(ProductBatch.quantity))\
+            .filter(
+                ProductBatch.branch_id == bp.branch_id,
+                ProductBatch.product_id == bp.product_id,
+                ProductBatch.is_active == True
+            ).scalar() or 0
+    
+    return branch_products
 
 @router.put('/{branch_id}/{product_id}', response_model=BranchProductResponse)
 def update_branch_product(
