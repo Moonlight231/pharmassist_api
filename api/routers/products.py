@@ -1,8 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Annotated, List
 from fastapi import APIRouter, HTTPException, status, Depends
 
-from api.models import Product, UserRole
+from api.models import Product, UserRole, Branch, BranchProduct
 from api.deps import db_dependency, user_dependency, role_required
 
 router = APIRouter(
@@ -12,18 +12,18 @@ router = APIRouter(
 
 class ProductBase(BaseModel):
     name: str
-    category: str
     cost: float
     srp: float
+    low_stock_threshold: int = Field(gt=0, default=50)
 
 class AddProduct(ProductBase):
     pass
 
 class UpdateProduct(BaseModel):
     name: Optional[str] = None
-    category: Optional[str] = None
     cost: Optional[float] = None
     srp: Optional[float] = None
+    low_stock_threshold: Optional[int] = Field(gt=0, default=None)
 
 @router.get('/')
 def get_product(db: db_dependency, user: user_dependency, product_id: int):
@@ -41,12 +41,33 @@ def add_product(
     product: AddProduct, 
     user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
 ):
-    # Only ADMIN can add products
+    # Create the product
     db_product = Product(**product.model_dump())
     db.add(db_product)
-    db.commit()
-    db.refresh(db_product)
-    return db_product
+    db.flush()  # This assigns an ID to db_product without committing
+    
+    # Get all branches
+    branches = db.query(Branch).filter(Branch.is_active == True).all()
+    
+    # Create branch_products entries for each branch
+    for branch in branches:
+        branch_product = BranchProduct(
+            branch_id=branch.id,
+            product_id=db_product.id,
+            quantity=0  # Initial quantity set to 0
+        )
+        db.add(branch_product)
+    
+    try:
+        db.commit()
+        db.refresh(db_product)
+        return db_product
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 @router.put('/{product_id}', status_code=status.HTTP_200_OK)
 def update_product(

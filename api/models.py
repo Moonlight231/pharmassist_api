@@ -37,9 +37,9 @@ class Product(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
-    category = Column(String)
     cost = Column(Float)
     srp = Column(Float)
+    low_stock_threshold = Column(Integer, default=50)
     branch_products = relationship("BranchProduct", back_populates="product")
     inv_report_items = relationship("InvReportItem", back_populates="product")
 
@@ -71,6 +71,19 @@ class BranchProduct(Base):
         if not active_batches:
             return None
         return min(b.expiration_date for b in active_batches)
+
+    @property
+    def active_quantity(self):
+        return sum(
+            batch.quantity for batch in self.batches 
+            if batch.is_active
+        )
+
+    @property
+    def is_low_stock(self):
+        if not self.product:
+            return False
+        return self.active_quantity <= self.product.low_stock_threshold
 
 class InvReport(Base):
     __tablename__ = "invreports"
