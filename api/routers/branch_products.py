@@ -36,6 +36,7 @@ class BranchProductResponse(BranchProductBase):
     current_expiration_date: Optional[date]
     is_low_stock: bool
     active_quantity: int
+    is_available: bool
 
     class Config:
         from_attributes = True
@@ -47,7 +48,8 @@ class LowStockProductResponse(BaseModel):
     threshold: int
     branch_id: int
     branch_name: str
-    
+    is_available: bool
+
     class Config:
         from_attributes = True
 
@@ -55,6 +57,9 @@ class LowStockSummary(BaseModel):
     total_products: int
     low_stock_count: int
     critical_products: List[BranchProductResponse]
+
+class AvailabilityUpdate(BaseModel):
+    is_available: bool
 
 @router.post('/', response_model=BranchProductResponse, status_code=status.HTTP_201_CREATED)
 def create_branch_product(
@@ -180,51 +185,48 @@ def get_low_stock_products(
             status_code=403,
             detail="You can only view products in your assigned branch"
         )
-    
-    # Subquery to get total quantities from active batches
-    batch_totals = (
-        db.query(
-            ProductBatch.product_id,
-            ProductBatch.branch_id,
-            sa.func.sum(ProductBatch.quantity).label('current_quantity')
-        )
-        .filter(
-            ProductBatch.branch_id == branch_id,
-            ProductBatch.is_active == True
-        )
-        .group_by(ProductBatch.product_id, ProductBatch.branch_id)
-        .subquery()
-    )
-    
-    # Main query joining with products and branches
-    low_stock_products = (
+
+    # Get all branch products with their related data
+    query = (
         db.query(
             Product,
             Branch,
-            batch_totals.c.current_quantity
+            BranchProduct,
+            sa.func.sum(ProductBatch.quantity).label('current_quantity')
         )
-        .join(batch_totals, Product.id == batch_totals.c.product_id)
-        .join(Branch, Branch.id == batch_totals.c.branch_id)
-        .filter(
+        .join(BranchProduct, sa.and_(
+            BranchProduct.product_id == Product.id,
+            BranchProduct.branch_id == branch_id
+        ))
+        .join(Branch, Branch.id == BranchProduct.branch_id)
+        .outerjoin(ProductBatch, sa.and_(
+            ProductBatch.product_id == Product.id,
+            ProductBatch.branch_id == branch_id,
+            ProductBatch.is_active == True
+        ))
+        .filter(BranchProduct.is_available == True)
+        .group_by(Product.id, Branch.id, BranchProduct.product_id, BranchProduct.branch_id)
+        .having(
             sa.or_(
-                batch_totals.c.current_quantity <= Product.low_stock_threshold,
-                batch_totals.c.current_quantity == None
+                sa.func.sum(ProductBatch.quantity) <= Product.low_stock_threshold,
+                sa.func.sum(ProductBatch.quantity) == None
             )
         )
-        .all()
     )
+
+    results = query.all()
     
-    # Transform the results
     return [
         {
             "product_id": product.id,
             "name": product.name,
-            "current_quantity": quantity or 0,
+            "current_quantity": int(quantity or 0),
             "threshold": product.low_stock_threshold,
             "branch_id": branch.id,
-            "branch_name": branch.branch_name
+            "branch_name": branch.branch_name,
+            "is_available": branch_product.is_available
         }
-        for product, branch, quantity in low_stock_products
+        for product, branch, branch_product, quantity in results
     ]
 
 @router.get('/low-stock-summary/{branch_id}', response_model=LowStockSummary)
@@ -266,3 +268,30 @@ def get_low_stock_summary(
         "low_stock_count": len(low_stock_products),
         "critical_products": low_stock_products
     }
+
+@router.patch('/{branch_id}/{product_id}/availability')
+def update_product_availability(
+    branch_id: int,
+    product_id: int,
+    availability: AvailabilityUpdate,
+    db: db_dependency,
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
+):
+    if user['role'] == UserRole.PHARMACIST.value and user['branch_id'] != branch_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only modify products in your assigned branch"
+        )
+
+    db_branch_product = db.query(BranchProduct).filter(
+        BranchProduct.branch_id == branch_id,
+        BranchProduct.product_id == product_id
+    ).first()
+    
+    if not db_branch_product:
+        raise HTTPException(status_code=404, detail="Branch product not found")
+    
+    db_branch_product.is_available = availability.is_available
+    db.commit()
+    db.refresh(db_branch_product)
+    return db_branch_product

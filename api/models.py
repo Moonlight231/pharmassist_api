@@ -49,6 +49,7 @@ class BranchProduct(Base):
     product_id = Column(Integer, ForeignKey('products.id'), primary_key=True)
     branch_id = Column(Integer, ForeignKey('branches.id'), primary_key=True)
     quantity = Column(Integer)
+    is_available = Column(Boolean, default=True)
     
     product = relationship("Product", back_populates="branch_products")
     branch = relationship("Branch", back_populates="branch_products")
@@ -81,7 +82,7 @@ class BranchProduct(Base):
 
     @property
     def is_low_stock(self):
-        if not self.product:
+        if not self.product or not self.is_available:
             return False
         return self.active_quantity <= self.product.low_stock_threshold
 
