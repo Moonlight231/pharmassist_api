@@ -346,8 +346,8 @@ def get_inventory_report(
     report = (
         db.query(InvReport)
         .options(
-            joinedload(InvReport.items)
-            .joinedload(InvReportItem.batches)
+            joinedload(InvReport.items.of_type(InvReportItem))
+            .joinedload(InvReportItem.product)
         )
         .filter(InvReport.id == report_id)
         .first()
@@ -355,6 +355,9 @@ def get_inventory_report(
     
     if not report:
         raise HTTPException(status_code=404, detail="Inventory report not found")
+    
+    # Sort items by product name
+    report.items.sort(key=lambda x: x.product.name)
     
     return report
 
@@ -368,14 +371,18 @@ def get_all_inventory_reports(
     reports = (
         db.query(InvReport)
         .options(
-            joinedload(InvReport.items)
-            .joinedload(InvReportItem.batches)
+            joinedload(InvReport.items.of_type(InvReportItem))
+            .joinedload(InvReportItem.product)
         )
         .order_by(InvReport.created_at.desc())
         .offset(skip)
         .limit(limit)
         .all()
     )
+    
+    # Sort items in each report by product name
+    for report in reports:
+        report.items.sort(key=lambda x: x.product.name)
     
     return reports
 
@@ -390,8 +397,8 @@ def get_branch_inventory_reports(
     reports = (
         db.query(InvReport)
         .options(
-            joinedload(InvReport.items)
-            .joinedload(InvReportItem.batches)
+            joinedload(InvReport.items.of_type(InvReportItem))
+            .joinedload(InvReportItem.product)
         )
         .filter(InvReport.branch_id == branch_id)
         .order_by(InvReport.created_at.desc())
@@ -399,6 +406,10 @@ def get_branch_inventory_reports(
         .limit(limit)
         .all()
     )
+    
+    # Sort items in each report by product name
+    for report in reports:
+        report.items.sort(key=lambda x: x.product.name)
     
     return reports
 
