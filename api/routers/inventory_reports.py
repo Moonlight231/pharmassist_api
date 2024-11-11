@@ -208,7 +208,12 @@ def update_branch_product_quantity(db: Session, branch_id: int, product_id: int)
         ).first()
     
     if branch_product:
+        old_quantity = branch_product.quantity
         branch_product.quantity = total_quantity
+        
+        # If quantity is changing from 0 to a positive number, make the product available
+        if old_quantity == 0 and total_quantity > 0:
+            branch_product.is_available = True
 
 @router.post('/', response_model=InvReportResponse, status_code=status.HTTP_201_CREATED)
 def create_inventory_report(

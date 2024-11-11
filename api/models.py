@@ -49,7 +49,7 @@ class BranchProduct(Base):
     product_id = Column(Integer, ForeignKey('products.id'), primary_key=True)
     branch_id = Column(Integer, ForeignKey('branches.id'), primary_key=True)
     quantity = Column(Integer)
-    is_available = Column(Boolean, default=True)
+    is_available = Column(Boolean, default=False)
     
     product = relationship("Product", back_populates="branch_products")
     branch = relationship("Branch", back_populates="branch_products")

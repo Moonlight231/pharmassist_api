@@ -54,7 +54,8 @@ def add_product(
         branch_product = BranchProduct(
             branch_id=branch.id,
             product_id=db_product.id,
-            quantity=0  # Initial quantity set to 0
+            quantity=0,  # Initial quantity set to 0
+            is_available=False  # Explicitly set as unavailable
         )
         db.add(branch_product)
     

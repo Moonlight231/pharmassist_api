@@ -49,7 +49,8 @@ def create_branch(
         branch_product = BranchProduct(
             branch_id=new_branch.id,
             product_id=product.id,
-            quantity=0  # Initial quantity set to 0
+            quantity=0,  # Initial quantity set to 0
+            is_available=False  # Explicitly set as unavailable
         )
         db.add(branch_product)
 
