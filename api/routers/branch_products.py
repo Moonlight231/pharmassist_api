@@ -97,7 +97,7 @@ def get_branch_products(
     query = db.query(BranchProduct).options(
         joinedload(BranchProduct.batches),
         joinedload(BranchProduct.product)
-    )
+    ).join(Product)
     
     # Apply filters
     if user['role'] == UserRole.PHARMACIST.value:
@@ -107,6 +107,9 @@ def get_branch_products(
         
     if product_id:
         query = query.filter(BranchProduct.product_id == product_id)
+    
+    # Add ordering by product name
+    query = query.order_by(Product.name)
     
     branch_products = query.all()
     
@@ -212,6 +215,11 @@ def get_low_stock_products(
                 sa.func.sum(ProductBatch.quantity) == None
             )
         )
+        .order_by(
+            # Order by how close to empty (percentage of threshold remaining)
+            (sa.func.coalesce(sa.func.sum(ProductBatch.quantity), 0) / Product.low_stock_threshold).asc(),
+            Product.name.asc()
+        )
     )
 
     results = query.all()
@@ -245,11 +253,24 @@ def get_low_stock_summary(
         )
     
     # Get all branch products with their batches
-    query = db.query(BranchProduct).options(
-        joinedload(BranchProduct.batches),
-        joinedload(BranchProduct.product)
-    ).filter(BranchProduct.branch_id == branch_id)
-    
+    query = (
+        db.query(BranchProduct)
+        .options(
+            joinedload(BranchProduct.batches),
+            joinedload(BranchProduct.product)
+        )
+        .join(Product)
+        .filter(BranchProduct.branch_id == branch_id)
+        .order_by(
+            # Order by percentage of threshold remaining
+            (sa.func.sum(sa.case(
+                (ProductBatch.is_active == True, ProductBatch.quantity),
+                else_=0
+            )) / Product.low_stock_threshold).asc(),
+            Product.name.asc()
+        )
+    )
+
     branch_products = query.all()
     
     # Process products
