@@ -260,13 +260,23 @@ def get_low_stock_summary(
             joinedload(BranchProduct.product)
         )
         .join(Product)
+        .outerjoin(ProductBatch, sa.and_(
+            ProductBatch.product_id == BranchProduct.product_id,
+            ProductBatch.branch_id == BranchProduct.branch_id,
+            ProductBatch.is_active == True
+        ))
         .filter(BranchProduct.branch_id == branch_id)
+        .group_by(
+            BranchProduct.product_id,
+            BranchProduct.branch_id,
+            BranchProduct.quantity,
+            BranchProduct.is_available,
+            Product.id,
+            Product.name,
+            Product.low_stock_threshold
+        )
         .order_by(
-            # Order by percentage of threshold remaining
-            (sa.func.sum(sa.case(
-                (ProductBatch.is_active == True, ProductBatch.quantity),
-                else_=0
-            )) / Product.low_stock_threshold).asc(),
+            (sa.func.coalesce(sa.func.sum(ProductBatch.quantity), 0) / sa.cast(Product.low_stock_threshold, sa.Numeric)).asc(),
             Product.name.asc()
         )
     )
