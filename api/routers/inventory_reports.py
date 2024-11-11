@@ -243,17 +243,17 @@ def create_inventory_report(
         report_item = InvReportItem(
             product_id=item_data.product_id,
             beginning=item_data.beginning,
-            offtake=item_data.offtake,
             selling_area=item_data.selling_area,
+            offtake=0,  # Set to 0 initially, will update after processing batches
             current_cost=product.cost,
             current_srp=product.srp
         )
         new_report.items.append(report_item)
-        
-        # Process delivery batches
+
+        # Step 1: Process all incoming stock first (deliveries and transfers)
         if item_data.delivery_batches:
             for batch in item_data.delivery_batches:
-                # Save to InvReportBatch
+                process_batch(db, report.branch_id, item_data.product_id, batch, current_time)
                 report_batch = InvReportBatch(
                     quantity=batch.quantity,
                     expiration_date=batch.expiration_date,
@@ -261,31 +261,10 @@ def create_inventory_report(
                     created_at=current_time
                 )
                 report_item.batches.append(report_batch)
-                
-                # Update ProductBatch
-                existing_batch = db.query(ProductBatch).filter(
-                    ProductBatch.branch_id == report.branch_id,
-                    ProductBatch.product_id == item_data.product_id,
-                    ProductBatch.expiration_date == batch.expiration_date,
-                    ProductBatch.is_active == True
-                ).first()
-                
-                if existing_batch:
-                    existing_batch.quantity += batch.quantity
-                else:
-                    new_batch = ProductBatch(
-                        branch_id=report.branch_id,
-                        product_id=item_data.product_id,
-                        quantity=batch.quantity,
-                        expiration_date=batch.expiration_date,
-                        created_at=current_time
-                    )
-                    db.add(new_batch)
-        
-        # Process transfer batches - similar logic
+
         if item_data.transfer_batches:
             for batch in item_data.transfer_batches:
-                # Save to InvReportBatch
+                process_batch(db, report.branch_id, item_data.product_id, batch, current_time)
                 report_batch = InvReportBatch(
                     quantity=batch.quantity,
                     expiration_date=batch.expiration_date,
@@ -293,31 +272,13 @@ def create_inventory_report(
                     created_at=current_time
                 )
                 report_item.batches.append(report_batch)
-                
-                # Update ProductBatch
-                existing_batch = db.query(ProductBatch).filter(
-                    ProductBatch.branch_id == report.branch_id,
-                    ProductBatch.product_id == item_data.product_id,
-                    ProductBatch.expiration_date == batch.expiration_date,
-                    ProductBatch.is_active == True
-                ).first()
-                
-                if existing_batch:
-                    existing_batch.quantity += batch.quantity
-                else:
-                    new_batch = ProductBatch(
-                        branch_id=report.branch_id,
-                        product_id=item_data.product_id,
-                        quantity=batch.quantity,
-                        expiration_date=batch.expiration_date,
-                        created_at=current_time
-                    )
-                    db.add(new_batch)
-        
-        # Process pull-out batches
+
+        # Commit the incoming stock changes before processing pull-outs
+        db.flush()
+
+        # Step 2: Process pull-outs
         if item_data.pull_out_batches:
             for batch in item_data.pull_out_batches:
-                # Get existing batch to get its expiration date
                 existing_batch = db.query(ProductBatch).filter(
                     ProductBatch.branch_id == report.branch_id,
                     ProductBatch.product_id == item_data.product_id,
@@ -337,7 +298,6 @@ def create_inventory_report(
                         detail=f"Insufficient quantity in batch with expiration date {batch.expiration_date}"
                     )
                 
-                # Save to InvReportBatch with expiration date from existing batch
                 report_batch = InvReportBatch(
                     quantity=batch.quantity,
                     expiration_date=existing_batch.expiration_date,
@@ -346,10 +306,20 @@ def create_inventory_report(
                 )
                 report_item.batches.append(report_batch)
                 
-                # Update existing batch quantity
                 existing_batch.quantity -= batch.quantity
-    
-        # After processing all batches for this item
+
+        # Step 3: Process offtake using update_batch_quantities
+        if item_data.offtake > 0:
+            try:
+                update_batch_quantities(db, report.branch_id, item_data.product_id, item_data.offtake)
+                report_item.offtake = item_data.offtake
+            except HTTPException as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Error processing offtake: {str(e)}"
+                )
+
+        # Update final quantities after all operations
         update_branch_product_quantity(db, report.branch_id, item_data.product_id)
     
     try:
@@ -358,7 +328,6 @@ def create_inventory_report(
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Fetch complete report
     complete_report = (
         db.query(InvReport)
         .options(joinedload(InvReport.items).joinedload(InvReportItem.batches))
