@@ -14,26 +14,42 @@ class ProductBase(BaseModel):
     name: str
     cost: float
     srp: float
-    low_stock_threshold: int = Field(gt=0, default=50)
+    retail_low_stock_threshold: int = Field(gt=0, default=50)
+    wholesale_low_stock_threshold: int = Field(gt=0, default=50)
 
 class AddProduct(ProductBase):
-    pass
+    is_retail_available: bool = True
+    is_wholesale_available: bool = False
 
 class UpdateProduct(BaseModel):
     name: Optional[str] = None
     cost: Optional[float] = None
     srp: Optional[float] = None
-    low_stock_threshold: Optional[int] = Field(gt=0, default=None)
+    retail_low_stock_threshold: Optional[int] = Field(gt=0, default=None)
+    wholesale_low_stock_threshold: Optional[int] = Field(gt=0, default=None)
+    is_retail_available: Optional[bool] = None
+    is_wholesale_available: Optional[bool] = None
 
-@router.get('/')
+class ProductResponse(ProductBase):
+    id: int
+    is_retail_available: bool
+    is_wholesale_available: bool
+    retail_low_stock_threshold: int
+    wholesale_low_stock_threshold: int
+
+    class Config:
+        from_attributes = True
+
+@router.get('/', response_model=ProductResponse)
 def get_product(db: db_dependency, user: user_dependency, product_id: int):
-    # Allow all authenticated users to view products
-    return db.query(Product).filter(Product.id == product_id).first()
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
 
-@router.get('/products')
+@router.get('/products', response_model=List[ProductResponse])
 def get_products(db: db_dependency, user: user_dependency):
-    # Allow all authenticated users to view products
-    return db.query(Product).all()
+    return db.query(Product).order_by(Product.name).all()
 
 @router.post('/', status_code=status.HTTP_201_CREATED)
 def add_product(
@@ -95,10 +111,22 @@ def delete_product(
     db: db_dependency, 
     user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
 ):
-    # Only ADMIN can delete products
+    # Check if product has any active branch products
+    active_branch_products = db.query(BranchProduct).filter(
+        BranchProduct.product_id == product_id,
+        BranchProduct.is_available == True
+    ).first()
+    
+    if active_branch_products:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete product while it is active in branches"
+        )
+
     db_product = db.query(Product).filter(Product.id == product_id).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
+    
     db.delete(db_product)
     db.commit()
     return {"detail": "Product deleted successfully"}

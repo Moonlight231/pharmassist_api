@@ -5,7 +5,7 @@ from typing import List, Optional, Annotated
 from pydantic import BaseModel, computed_field
 from datetime import date, datetime, timedelta
 
-from api.models import InvReport, InvReportItem, BranchProduct, Product, UserRole, ProductBatch, InvReportBatch
+from api.models import Branch, InvReport, InvReportItem, BranchProduct, Product, UserRole, ProductBatch, InvReportBatch
 from api.deps import db_dependency, role_required
 
 router = APIRouter(
@@ -163,6 +163,32 @@ def update_batch_quantities(db: Session, branch_id: int, product_id: int, used_q
 
 def process_batch(db: Session, branch_id: int, product_id: int, batch_info: BatchDeliveryInfo | BatchTransferInfo, current_time: datetime):
     """Process a single batch delivery or transfer"""
+    # Get branch and product first
+    branch_product = db.query(BranchProduct)\
+        .join(Branch)\
+        .join(Product)\
+        .filter(
+            BranchProduct.branch_id == branch_id,
+            BranchProduct.product_id == product_id
+        ).first()
+    
+    if not branch_product:
+        raise HTTPException(status_code=404, detail="Branch product not found")
+        
+    # Check if product is available for this branch type
+    if (branch_product.branch.branch_type == 'wholesale' and 
+        not branch_product.product.is_wholesale_available):
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for wholesale branches"
+        )
+    elif (branch_product.branch.branch_type == 'retail' and 
+          not branch_product.product.is_retail_available):
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for retail branches"
+        )
+
     # First save to InvReportBatch
     new_report_batch = InvReportBatch(
         quantity=batch_info.quantity,
@@ -194,6 +220,30 @@ def process_batch(db: Session, branch_id: int, product_id: int, batch_info: Batc
 
 def update_branch_product_quantity(db: Session, branch_id: int, product_id: int):
     """Update branch product quantity to match sum of active batches"""
+    # Get branch and product first
+    branch_product = db.query(BranchProduct)\
+        .join(Branch)\
+        .join(Product)\
+        .filter(
+            BranchProduct.branch_id == branch_id,
+            BranchProduct.product_id == product_id
+        ).first()
+    
+    if not branch_product:
+        return
+        
+    # Check if product is available for this branch type
+    if (branch_product.branch.branch_type == 'wholesale' and 
+        not branch_product.product.is_wholesale_available):
+        branch_product.is_available = False
+        db.commit()
+        return
+    elif (branch_product.branch.branch_type == 'retail' and 
+          not branch_product.product.is_retail_available):
+        branch_product.is_available = False
+        db.commit()
+        return
+
     total_quantity = db.query(sa.func.sum(ProductBatch.quantity))\
         .filter(
             ProductBatch.branch_id == branch_id,
@@ -201,26 +251,28 @@ def update_branch_product_quantity(db: Session, branch_id: int, product_id: int)
             ProductBatch.is_active == True
         ).scalar() or 0
     
-    branch_product = db.query(BranchProduct)\
-        .filter(
-            BranchProduct.branch_id == branch_id,
-            BranchProduct.product_id == product_id
-        ).first()
+    old_quantity = branch_product.quantity
+    branch_product.quantity = total_quantity
     
-    if branch_product:
-        old_quantity = branch_product.quantity
-        branch_product.quantity = total_quantity
-        
-        # If quantity is changing from 0 to a positive number, make the product available
-        if old_quantity == 0 and total_quantity > 0:
-            branch_product.is_available = True
+    # If quantity is changing from 0 to a positive number, make the product available
+    if old_quantity == 0 and total_quantity > 0:
+        branch_product.is_available = True
+    
+    db.commit()
 
 @router.post('/', response_model=InvReportResponse, status_code=status.HTTP_201_CREATED)
 def create_inventory_report(
     report: InvReportCreate,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required(UserRole.PHARMACIST))]
+    user: Annotated[dict, Depends(role_required([UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
+    # Check if user is assigned to this branch
+    if user['branch_id'] != report.branch_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only create reports for your assigned branch"
+        )
+    
     current_time = datetime.now()
     
     # Create report
@@ -232,12 +284,26 @@ def create_inventory_report(
     )
     db.add(new_report)
     
-    # Process each item
+    # Check if product is available for this branch type
+    branch = db.query(Branch).filter(Branch.id == report.branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
     for item_data in report.items:
-        # Get product info
         product = db.query(Product).get(item_data.product_id)
         if not product:
             raise HTTPException(status_code=404, detail=f"Product {item_data.product_id} not found")
+            
+        if branch.branch_type == 'wholesale' and not product.is_wholesale_available:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Product {product.name} is not available for wholesale branches"
+            )
+        elif branch.branch_type == 'retail' and not product.is_retail_available:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Product {product.name} is not available for retail branches"
+            )
         
         # Create report item
         report_item = InvReportItem(
@@ -341,7 +407,7 @@ def create_inventory_report(
 def get_inventory_report(
     report_id: int,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))]
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
     report = (
         db.query(InvReport)
@@ -356,6 +422,13 @@ def get_inventory_report(
     if not report:
         raise HTTPException(status_code=404, detail="Inventory report not found")
     
+    # Check if user is assigned to this branch
+    if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value] and user['branch_id'] != report.branch_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only view reports for your assigned branch"
+        )
+    
     # Sort items by product name
     report.items.sort(key=lambda x: x.product.name)
     
@@ -364,21 +437,23 @@ def get_inventory_report(
 @router.get('/', response_model=List[InvReportResponse])
 def get_all_inventory_reports(
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
     skip: int = 0,
     limit: int = 100
 ):
-    reports = (
+    query = (
         db.query(InvReport)
         .options(
             joinedload(InvReport.items.of_type(InvReportItem))
             .joinedload(InvReportItem.product)
         )
-        .order_by(InvReport.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
     )
+    
+    # Filter by branch for non-admin users
+    if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value]:
+        query = query.filter(InvReport.branch_id == user['branch_id'])
+    
+    reports = query.order_by(InvReport.created_at.desc()).offset(skip).limit(limit).all()
     
     # Sort items in each report by product name
     for report in reports:
@@ -390,10 +465,17 @@ def get_all_inventory_reports(
 def get_branch_inventory_reports(
     branch_id: int,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
     skip: int = 0,
     limit: int = 100
 ):
+    # Check if user is assigned to this branch
+    if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value] and user['branch_id'] != branch_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only view reports for your assigned branch"
+        )
+    
     reports = (
         db.query(InvReport)
         .options(
@@ -421,8 +503,15 @@ class ProductBatchSummary(BaseModel):
 
 class ProductBatchesResponse(BaseModel):
     product_id: int
+    name: str
+    branch_id: int
+    branch_name: str
+    branch_type: str
+    total_quantity: int
+    expired: int
+    critical: int
+    warning: int
     batches: List[ProductBatchItem]
-    summary: ProductBatchSummary
 
 class BranchExpiringBatchesResponse(BaseModel):
     expired: List[ExpiringBatchItem]
@@ -433,8 +522,15 @@ class BranchExpiringBatchesResponse(BaseModel):
 def get_branch_expiring_batches(
     branch_id: int,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required(UserRole.PHARMACIST))]
+    user: Annotated[dict, Depends(role_required([UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
+    # Check if user is assigned to this branch
+    if user['branch_id'] != branch_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only view expiring batches for your assigned branch"
+        )
+    
     """Get all batch suggestions for a branch, grouped by expiry status"""
     batches = (db.query(ProductBatch)
         .filter(
@@ -472,9 +568,36 @@ def get_product_batches(
     branch_id: int,
     product_id: int,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required(UserRole.PHARMACIST))]
+    user: Annotated[dict, Depends(role_required([UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
-    """Get batch suggestions for a specific product in a branch"""
+    # Check if user is assigned to this branch
+    if user['branch_id'] != branch_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only view batches for your assigned branch"
+        )
+
+    # Get branch and product
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Check if product is available for this branch type
+    if branch.branch_type == 'wholesale' and not product.is_wholesale_available:
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for wholesale branches"
+        )
+    elif branch.branch_type == 'retail' and not product.is_retail_available:
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for retail branches"
+        )
+
     batches = (db.query(ProductBatch)
         .filter(
             ProductBatch.branch_id == branch_id,
@@ -503,11 +626,13 @@ def get_product_batches(
 
     return {
         "product_id": product_id,
-        "batches": combined_batches,
-        "summary": {
-            "total_quantity": sum(b["quantity"] for b in combined_batches),
-            "expired": sum(1 for b in combined_batches if b["status"] == "expired"),
-            "critical": sum(1 for b in combined_batches if b["status"] == "critical"),
-            "warning": sum(1 for b in combined_batches if b["status"] == "warning")
-        }
+        "name": product.name,
+        "branch_id": branch.id,
+        "branch_name": branch.branch_name,
+        "branch_type": branch.branch_type,
+        "total_quantity": sum(b["quantity"] for b in combined_batches),
+        "expired": sum(1 for b in combined_batches if b["status"] == "expired"),
+        "critical": sum(1 for b in combined_batches if b["status"] == "critical"),
+        "warning": sum(1 for b in combined_batches if b["status"] == "warning"),
+        "batches": combined_batches
     }

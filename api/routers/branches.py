@@ -17,7 +17,7 @@ class BranchBase(BaseModel):
     is_active: bool
 
 class BranchCreate(BranchBase):
-    pass
+    branch_type: str = 'retail'
 
 class BranchUpdate(BaseModel):
     branch_name: Optional[str] = None
@@ -26,6 +26,7 @@ class BranchUpdate(BaseModel):
 
 class BranchResponse(BranchBase):
     id: int
+    branch_type: str
 
     class Config:
         from_attributes = True

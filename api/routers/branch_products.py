@@ -4,7 +4,7 @@ from typing import List, Optional, Annotated
 from pydantic import BaseModel
 from datetime import date
 
-from api.models import BranchProduct, Branch, Product, UserRole
+from api.models import BranchProduct, Branch, Product, UserRole, BranchType
 from api.deps import db_dependency, role_required
 from sqlalchemy.orm import joinedload
 import sqlalchemy as sa
@@ -23,7 +23,7 @@ class BranchProductBase(BaseModel):
     @property
     def peso_value(self) -> float:
         """Calculate peso value based on product SRP and quantity"""
-        return self.product.srp * self.quantity if self.product else 0.00
+        return 0.00  # This will be overridden in response model
 
 class BranchProductCreate(BranchProductBase):
     pass
@@ -37,6 +37,18 @@ class BranchProductResponse(BranchProductBase):
     is_low_stock: bool
     active_quantity: int
     is_available: bool
+    branch_type: str
+    is_retail_available: bool
+    is_wholesale_available: bool
+    retail_low_stock_threshold: int
+    wholesale_low_stock_threshold: int
+
+    @property
+    def threshold(self) -> int:
+        """Return the appropriate threshold based on branch type"""
+        if self.branch_type == 'wholesale':
+            return self.wholesale_low_stock_threshold
+        return self.retail_low_stock_threshold
 
     class Config:
         from_attributes = True
@@ -67,6 +79,27 @@ def create_branch_product(
     db: db_dependency,
     user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
 ):
+    # Get branch type
+    branch = db.query(Branch).filter(Branch.id == branch_product.branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    # Get product and check availability for branch type
+    product = db.query(Product).filter(Product.id == branch_product.product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    if branch.branch_type == 'wholesale' and not product.is_wholesale_available:
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for wholesale branches"
+        )
+    elif branch.branch_type == 'retail' and not product.is_retail_available:
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for retail branches"
+        )
+
     db_branch_product = BranchProduct(**branch_product.dict())
     db.add(db_branch_product)
     db.commit()
@@ -76,7 +109,7 @@ def create_branch_product(
 @router.get('/', response_model=List[BranchProductResponse])
 def get_branch_products(
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
     branch_id: Optional[int] = None,
     product_id: Optional[int] = None,
     low_stock_only: bool = False
@@ -94,13 +127,23 @@ def get_branch_products(
     ).subquery()
     
     # Join with branch products
-    query = db.query(BranchProduct).options(
-        joinedload(BranchProduct.batches),
-        joinedload(BranchProduct.product)
-    ).join(Product)
+    query = (
+        db.query(
+            BranchProduct,
+            Product,
+            Branch
+        )
+        .join(Product)
+        .join(Branch)
+        .options(
+            joinedload(BranchProduct.batches),
+            joinedload(BranchProduct.product),
+            joinedload(BranchProduct.branch)
+        )
+    )
     
     # Apply filters
-    if user['role'] == UserRole.PHARMACIST.value:
+    if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value]:
         query = query.filter(BranchProduct.branch_id == user['branch_id'])
     elif branch_id:
         query = query.filter(BranchProduct.branch_id == branch_id)
@@ -108,14 +151,25 @@ def get_branch_products(
     if product_id:
         query = query.filter(BranchProduct.product_id == product_id)
     
+    # Get branch type and filter products accordingly
+    if branch_id:
+        branch = db.query(Branch).filter(Branch.id == branch_id).first()
+        if branch:
+            query = query.filter(
+                sa.case(
+                    (branch.branch_type == 'wholesale', Product.is_wholesale_available),
+                    else_=Product.is_retail_available
+                )
+            )
+    
     # Add ordering by product name
     query = query.order_by(Product.name)
     
-    branch_products = query.all()
+    results = query.all()
     
     # Update quantities and filter low stock if requested
-    result = []
-    for bp in branch_products:
+    response = []
+    for bp, product, branch in results:
         active_quantity = sum(
             batch.quantity for batch in bp.batches 
             if batch.is_active
@@ -123,9 +177,24 @@ def get_branch_products(
         bp.quantity = active_quantity
         
         if not low_stock_only or bp.is_low_stock:
-            result.append(bp)
+            response_item = {
+                "product_id": bp.product_id,
+                "branch_id": bp.branch_id,
+                "quantity": bp.quantity,
+                "peso_value": bp.peso_value,
+                "current_expiration_date": bp.current_expiration_date,
+                "is_low_stock": bp.is_low_stock,
+                "active_quantity": active_quantity,
+                "is_available": bp.is_available,
+                "branch_type": branch.branch_type,
+                "is_retail_available": product.is_retail_available,
+                "is_wholesale_available": product.is_wholesale_available,
+                "retail_low_stock_threshold": product.retail_low_stock_threshold,
+                "wholesale_low_stock_threshold": product.wholesale_low_stock_threshold
+            }
+            response.append(response_item)
     
-    return result
+    return response
 
 @router.put('/{branch_id}/{product_id}', response_model=BranchProductResponse)
 def update_branch_product(
@@ -133,13 +202,34 @@ def update_branch_product(
     product_id: int,
     branch_product: BranchProductUpdate,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))]
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
 ):
-    # Check if pharmacist is assigned to this branch
-    if user['role'] == UserRole.PHARMACIST and user['branch_id'] != branch_id:
+    # Check if user is assigned to this branch
+    if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value] and user['branch_id'] != branch_id:
         raise HTTPException(
             status_code=403,
             detail="You can only modify products in your assigned branch"
+        )
+
+    # Get branch and product
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Check if product is available for this branch type
+    if branch.branch_type == 'wholesale' and not product.is_wholesale_available:
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for wholesale branches"
+        )
+    elif branch.branch_type == 'retail' and not product.is_retail_available:
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for retail branches"
         )
 
     db_branch_product = db.query(BranchProduct).filter(
@@ -178,18 +268,24 @@ def delete_branch_product(
 def get_low_stock_products(
     branch_id: int,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
 ):
     """Get products that are below their low stock threshold"""
     
-    # Check if pharmacist is assigned to this branch
-    if user['role'] == UserRole.PHARMACIST.value and user['branch_id'] != branch_id:
+    # Check if user is assigned to this branch
+    if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value] and user['branch_id'] != branch_id:
         raise HTTPException(
             status_code=403,
             detail="You can only view products in your assigned branch"
         )
 
-    # Get all branch products with their related data
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    threshold_column = (
+        Product.wholesale_low_stock_threshold 
+        if branch.branch_type == 'wholesale' 
+        else Product.retail_low_stock_threshold
+    )
+
     query = (
         db.query(
             Product,
@@ -201,23 +297,28 @@ def get_low_stock_products(
             BranchProduct.product_id == Product.id,
             BranchProduct.branch_id == branch_id
         ))
-        .join(Branch, Branch.id == BranchProduct.branch_id)
+        .join(Branch)
         .outerjoin(ProductBatch, sa.and_(
             ProductBatch.product_id == Product.id,
             ProductBatch.branch_id == branch_id,
             ProductBatch.is_active == True
         ))
         .filter(BranchProduct.is_available == True)
-        .group_by(Product.id, Branch.id, BranchProduct.product_id, BranchProduct.branch_id)
+        .group_by(
+            Product.id,
+            Branch.id,
+            BranchProduct.product_id,
+            BranchProduct.branch_id,
+            BranchProduct.is_available
+        )
         .having(
             sa.or_(
-                sa.func.sum(ProductBatch.quantity) <= Product.low_stock_threshold,
+                sa.func.sum(ProductBatch.quantity) <= threshold_column,
                 sa.func.sum(ProductBatch.quantity) == None
             )
         )
         .order_by(
-            # Order by how close to empty (percentage of threshold remaining)
-            (sa.func.coalesce(sa.func.sum(ProductBatch.quantity), 0) / Product.low_stock_threshold).asc(),
+            (sa.func.coalesce(sa.func.sum(ProductBatch.quantity), 0) / threshold_column).asc(),
             Product.name.asc()
         )
     )
@@ -229,7 +330,11 @@ def get_low_stock_products(
             "product_id": product.id,
             "name": product.name,
             "current_quantity": int(quantity or 0),
-            "threshold": product.low_stock_threshold,
+            "threshold": (
+                product.wholesale_low_stock_threshold 
+                if branch.branch_type == 'wholesale' 
+                else product.retail_low_stock_threshold
+            ),
             "branch_id": branch.id,
             "branch_name": branch.branch_name,
             "is_available": branch_product.is_available
@@ -241,58 +346,69 @@ def get_low_stock_products(
 def get_low_stock_summary(
     branch_id: int,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
 ):
     """Get a summary of low stock products for a branch"""
     
-    # Check if pharmacist is assigned to this branch
-    if user['role'] == UserRole.PHARMACIST.value and user['branch_id'] != branch_id:
+    # Check if user is assigned to this branch
+    if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value] and user['branch_id'] != branch_id:
         raise HTTPException(
             status_code=403,
             detail="You can only view products in your assigned branch"
         )
     
-    # Get all branch products with their batches
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
     query = (
-        db.query(BranchProduct)
+        db.query(BranchProduct, Product, Branch)
         .options(
             joinedload(BranchProduct.batches),
-            joinedload(BranchProduct.product)
+            joinedload(BranchProduct.product),
+            joinedload(BranchProduct.branch)
         )
         .join(Product)
-        .outerjoin(ProductBatch, sa.and_(
-            ProductBatch.product_id == BranchProduct.product_id,
-            ProductBatch.branch_id == BranchProduct.branch_id,
-            ProductBatch.is_active == True
-        ))
-        .filter(BranchProduct.branch_id == branch_id)
-        .group_by(
-            BranchProduct.product_id,
-            BranchProduct.branch_id,
-            BranchProduct.quantity,
-            BranchProduct.is_available,
-            Product.id,
-            Product.name,
-            Product.low_stock_threshold
-        )
-        .order_by(
-            (sa.func.coalesce(sa.func.sum(ProductBatch.quantity), 0) / sa.cast(Product.low_stock_threshold, sa.Numeric)).asc(),
-            Product.name.asc()
+        .join(Branch)
+        .filter(
+            BranchProduct.branch_id == branch_id,
+            BranchProduct.is_available == True,
+            sa.case(
+                (branch.branch_type == 'wholesale', Product.is_wholesale_available),
+                else_=Product.is_retail_available
+            )
         )
     )
 
-    branch_products = query.all()
+    results = query.all()
     
-    # Process products
-    total_products = len(branch_products)
+    total_products = len(results)
     low_stock_products = []
     
-    for bp in branch_products:
-        # Update quantity to match active batches
-        bp.quantity = bp.active_quantity
+    for bp, product, branch in results:
+        active_quantity = sum(
+            batch.quantity for batch in bp.batches 
+            if batch.is_active
+        )
+        bp.quantity = active_quantity
         
         if bp.is_low_stock:
-            low_stock_products.append(bp)
+            response_item = {
+                "product_id": bp.product_id,
+                "branch_id": bp.branch_id,
+                "quantity": bp.quantity,
+                "peso_value": bp.peso_value,
+                "current_expiration_date": bp.current_expiration_date,
+                "is_low_stock": bp.is_low_stock,
+                "active_quantity": active_quantity,
+                "is_available": bp.is_available,
+                "branch_type": branch.branch_type,
+                "is_retail_available": product.is_retail_available,
+                "is_wholesale_available": product.is_wholesale_available,
+                "retail_low_stock_threshold": product.retail_low_stock_threshold,
+                "wholesale_low_stock_threshold": product.wholesale_low_stock_threshold
+            }
+            low_stock_products.append(response_item)
     
     return {
         "total_products": total_products,
@@ -306,12 +422,34 @@ def update_product_availability(
     product_id: int,
     availability: AvailabilityUpdate,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
 ):
-    if user['role'] == UserRole.PHARMACIST.value and user['branch_id'] != branch_id:
+    # Check if user is assigned to this branch
+    if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value] and user['branch_id'] != branch_id:
         raise HTTPException(
             status_code=403,
             detail="You can only modify products in your assigned branch"
+        )
+
+    # Get branch and product
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Check if product is available for this branch type
+    if branch.branch_type == 'wholesale' and not product.is_wholesale_available:
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for wholesale branches"
+        )
+    elif branch.branch_type == 'retail' and not product.is_retail_available:
+        raise HTTPException(
+            status_code=400,
+            detail="This product is not available for retail branches"
         )
 
     db_branch_product = db.query(BranchProduct).filter(
@@ -325,4 +463,4 @@ def update_product_availability(
     db_branch_product.is_available = availability.is_available
     db.commit()
     db.refresh(db_branch_product)
-    return db_branch_product
+    return {"detail": "Availability updated successfully"}

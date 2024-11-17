@@ -59,23 +59,33 @@ async def create_user(db: db_dependency, create_user_request: UserCreateRequest)
             detail="Username already exists"
         )
 
-    # Validate branch_id requirement for pharmacist
-    if create_user_request.role == UserRole.PHARMACIST:
+    # Validate branch_id requirement for branch-specific roles
+    if create_user_request.role in [UserRole.PHARMACIST, UserRole.WHOLESALER]:
         if not create_user_request.branch_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Branch ID is required for pharmacist users"
+                detail=f"Branch ID is required for {create_user_request.role.value} users"
             )
-        # Verify branch exists
+        # Verify branch exists and matches role type
         branch = db.query(Branch).filter(Branch.id == create_user_request.branch_id).first()
         if not branch:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Branch not found"
             )
-    
-    # For non-pharmacist roles, ensure branch_id is None
-    if create_user_request.role != UserRole.PHARMACIST:
+        if create_user_request.role == UserRole.WHOLESALER and branch.branch_type != 'wholesale':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Wholesaler users can only be assigned to wholesale branches"
+            )
+        if create_user_request.role == UserRole.PHARMACIST and branch.branch_type != 'retail':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Pharmacist users can only be assigned to retail branches"
+            )
+
+    # For other roles, ensure branch_id is None
+    if create_user_request.role not in [UserRole.PHARMACIST, UserRole.WHOLESALER]:
         create_user_request.branch_id = None
 
     create_user_model = User(

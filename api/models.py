@@ -22,6 +22,10 @@ class User(Base):
     branch_id = Column(Integer, ForeignKey('branches.id'), nullable=True)
     branch = relationship("Branch", back_populates="users")
 
+class BranchType(str, Enum):
+    RETAIL = 'retail'
+    WHOLESALE = 'wholesale'
+
 class Branch(Base):
     __tablename__ = "branches"
 
@@ -29,6 +33,7 @@ class Branch(Base):
     branch_name = Column(String)
     location = Column(String)
     is_active = Column(Boolean, default=True)
+    branch_type = Column(String, default=BranchType.RETAIL)
     branch_products = relationship("BranchProduct", back_populates="branch")
     users = relationship("User", back_populates="branch")
 
@@ -39,7 +44,10 @@ class Product(Base):
     name = Column(String)
     cost = Column(Float)
     srp = Column(Float)
-    low_stock_threshold = Column(Integer, default=50)
+    retail_low_stock_threshold = Column(Integer, default=50)
+    wholesale_low_stock_threshold = Column(Integer, default=50)
+    is_retail_available = Column(Boolean, default=True)
+    is_wholesale_available = Column(Boolean, default=False)
     branch_products = relationship("BranchProduct", back_populates="product")
     inv_report_items = relationship("InvReportItem", back_populates="product")
 
@@ -84,7 +92,12 @@ class BranchProduct(Base):
     def is_low_stock(self):
         if not self.product or not self.is_available:
             return False
-        return self.active_quantity <= self.product.low_stock_threshold
+        threshold = (
+            self.product.wholesale_low_stock_threshold 
+            if self.branch.branch_type == BranchType.WHOLESALE 
+            else self.product.retail_low_stock_threshold
+        )
+        return self.active_quantity <= threshold
 
 class InvReport(Base):
     __tablename__ = "invreports"
