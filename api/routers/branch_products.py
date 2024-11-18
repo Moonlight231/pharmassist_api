@@ -27,7 +27,8 @@ class BranchProductUpdate(BaseModel):
     expiration_date: Optional[date] = None
 
 class BranchProductResponse(BranchProductBase):
-    id: int
+    id: str
+    peso_value: float
     current_expiration_date: Optional[date]
     is_low_stock: bool
     active_quantity: int
@@ -37,14 +38,6 @@ class BranchProductResponse(BranchProductBase):
     is_wholesale_available: bool
     retail_low_stock_threshold: int
     wholesale_low_stock_threshold: int
-    peso_value: float = Field(description="Calculated peso value based on product SRP and quantity")
-
-    @property
-    def threshold(self) -> int:
-        """Return the appropriate threshold based on branch type"""
-        if self.branch_type == 'wholesale':
-            return self.wholesale_low_stock_threshold
-        return self.retail_low_stock_threshold
 
     model_config = ConfigDict(
         from_attributes=True
@@ -175,6 +168,7 @@ def get_branch_products(
         
         if not low_stock_only or bp.is_low_stock:
             response_item = {
+                "id": f"{bp.branch_id}-{bp.product_id}",
                 "product_id": bp.product_id,
                 "branch_id": bp.branch_id,
                 "quantity": bp.quantity,
@@ -391,6 +385,7 @@ def get_low_stock_summary(
         
         if bp.is_low_stock:
             response_item = {
+                "id": f"{bp.branch_id}-{bp.product_id}",
                 "product_id": bp.product_id,
                 "branch_id": bp.branch_id,
                 "quantity": bp.quantity,
