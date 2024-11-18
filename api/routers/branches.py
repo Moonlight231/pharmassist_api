@@ -62,20 +62,34 @@ def create_branch(
 @router.get('/', response_model=List[BranchResponse])
 def get_all_branches(
     db: db_dependency, 
-    user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
-    branches = db.query(Branch).all()
-    return branches
+    query = db.query(Branch)
+    
+    # Non-admin users can only see their branch
+    if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value]:
+        query = query.filter(Branch.id == user['branch_id'])
+    
+    return query.all()
 
 @router.get('/{branch_id}', response_model=BranchResponse)
 def get_branch(
     branch_id: int, 
     db: db_dependency, 
-    user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
+    
+    # Non-admin users can only view their own branch
+    if (user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value] and 
+        user['branch_id'] != branch_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only view your assigned branch"
+        )
+    
     return branch
 
 @router.put('/{branch_id}', response_model=BranchResponse)
