@@ -39,6 +39,7 @@ class Branch(Base):
     branch_type = Column(String, default=BranchType.RETAIL)
     branch_products = relationship("BranchProduct", back_populates="branch")
     users = relationship("User", back_populates="branch")
+    clients = relationship("Client", back_populates="branch")
 
 class Product(Base):
     __tablename__ = "products"
@@ -251,6 +252,35 @@ class Profile(Base):
 
     class Config:
         orm_mode = True
+
+class Client(Base):
+    __tablename__ = "clients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    tin_number = Column(String, nullable=True)
+    markup_percentage = Column(Float, default=0.0)
+    payment_terms = Column(Integer, default=0)
+    credit_limit = Column(Float, default=0.0)
+    current_balance = Column(Float, default=0.0)
+    address = Column(String)
+    contact_person = Column(String)
+    contact_number = Column(String)
+    email = Column(String)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    branch_id = Column(Integer, ForeignKey('branches.id'))
+    branch = relationship("Branch", back_populates="clients")
+
+    @property
+    def available_credit(self):
+        return self.credit_limit - self.current_balance
+
+    @property
+    def is_credit_available(self):
+        return self.available_credit > 0
 
 # Create the tables if they don't exist
 User.metadata.create_all(bind=engine)

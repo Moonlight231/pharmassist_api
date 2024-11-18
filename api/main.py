@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import auth, products, branches, branch_products, inventory_reports
+from .routers import auth, products, branches, branch_products, inventory_reports, clients
 
 from .database import Base, engine
 
@@ -30,3 +30,4 @@ app.include_router(products.router)
 app.include_router(branches.router)
 app.include_router(branch_products.router)
 app.include_router(inventory_reports.router)
+app.include_router(clients.router)
