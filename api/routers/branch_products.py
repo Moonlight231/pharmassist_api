@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Annotated
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import date
 
 from api.models import BranchProduct, Branch, Product, UserRole, BranchType
@@ -20,11 +20,6 @@ class BranchProductBase(BaseModel):
     branch_id: int
     quantity: int
 
-    @property
-    def peso_value(self) -> float:
-        """Calculate peso value based on product SRP and quantity"""
-        return 0.00  # This will be overridden in response model
-
 class BranchProductCreate(BranchProductBase):
     pass
 
@@ -32,7 +27,7 @@ class BranchProductUpdate(BaseModel):
     expiration_date: Optional[date] = None
 
 class BranchProductResponse(BranchProductBase):
-    peso_value: float
+    id: int
     current_expiration_date: Optional[date]
     is_low_stock: bool
     active_quantity: int
@@ -42,6 +37,7 @@ class BranchProductResponse(BranchProductBase):
     is_wholesale_available: bool
     retail_low_stock_threshold: int
     wholesale_low_stock_threshold: int
+    peso_value: float = Field(description="Calculated peso value based on product SRP and quantity")
 
     @property
     def threshold(self) -> int:
@@ -50,8 +46,9 @@ class BranchProductResponse(BranchProductBase):
             return self.wholesale_low_stock_threshold
         return self.retail_low_stock_threshold
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(
+        from_attributes=True
+    )
 
 class LowStockProductResponse(BaseModel):
     product_id: int

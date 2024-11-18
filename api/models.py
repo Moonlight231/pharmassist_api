@@ -18,9 +18,12 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
+    initial_password = Column(String)  # Store initial password temporarily
+    has_changed_password = Column(Boolean, default=False)
     role = Column(String)
     branch_id = Column(Integer, ForeignKey('branches.id'), nullable=True)
     branch = relationship("Branch", back_populates="users")
+    profile = relationship("Profile", back_populates="user", uselist=False)
 
 class BranchType(str, Enum):
     RETAIL = 'retail'
@@ -226,6 +229,28 @@ class InvReportBatch(Base):
     created_at = Column(DateTime, default=datetime.now)
     
     invreport_item = relationship("InvReportItem", back_populates="batches")
+
+class Profile(Base):
+    __tablename__ = "profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True)
+    first_name = Column(String)
+    last_name = Column(String)
+    email = Column(String)
+    phone_number = Column(String, nullable=True)
+    license_number = Column(String, nullable=True)  # For pharmacists
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    user = relationship("User", back_populates="profile")
+
+    @property
+    def full_name(self):
+        return f"{self.first_name} {self.last_name}"
+
+    class Config:
+        orm_mode = True
 
 # Create the tables if they don't exist
 User.metadata.create_all(bind=engine)
