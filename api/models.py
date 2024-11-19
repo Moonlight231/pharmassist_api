@@ -282,5 +282,70 @@ class Client(Base):
     def is_credit_available(self):
         return self.available_credit > 0
 
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey('clients.id'))
+    branch_id = Column(Integer, ForeignKey('branches.id'))
+    total_amount = Column(Float, default=0.0)
+    amount_paid = Column(Float, default=0.0)
+    payment_status = Column(String)  # 'pending', 'partial', 'paid'
+    transaction_date = Column(DateTime, default=datetime.now)
+    transaction_terms = Column(Integer)
+    transaction_markup = Column(Float)
+    due_date = Column(Date)
+    reference_number = Column(String, unique=True)
+    notes = Column(String, nullable=True)
+    is_void = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    client = relationship("Client", backref="transactions")
+    branch = relationship("Branch", backref="transactions")
+    items = relationship("TransactionItem", back_populates="transaction", cascade="all, delete-orphan")
+
+    @classmethod
+    def generate_reference(cls, db: Session, branch_id: int) -> str:
+        today = date.today()
+        date_part = today.strftime("%Y%m%d")
+        latest = db.query(cls).filter(
+            cls.branch_id == branch_id,
+            cls.reference_number.like(f"WS-{branch_id}-{date_part}-%")
+        ).order_by(cls.reference_number.desc()).first()
+        
+        if latest:
+            last_sequence = int(latest.reference_number.split('-')[-1])
+            new_sequence = str(last_sequence + 1).zfill(4)
+        else:
+            new_sequence = "0001"
+        return f"WS-{branch_id}-{date_part}-{new_sequence}"
+
+    @property
+    def balance(self):
+        return self.total_amount - self.amount_paid
+
+    @property
+    def is_overdue(self):
+        return date.today() > self.due_date and self.payment_status != 'paid'
+
+class TransactionItem(Base):
+    __tablename__ = "transaction_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transaction_id = Column(Integer, ForeignKey('transactions.id'))
+    product_id = Column(Integer, ForeignKey('products.id'))
+    quantity = Column(Integer, nullable=False)
+    base_price = Column(Float, nullable=False)
+    markup_price = Column(Float, nullable=False)
+    total_amount = Column(Float, nullable=False)
+    
+    transaction = relationship("Transaction", back_populates="items")
+    product = relationship("Product")
+
+    def calculate_prices(self, markup_percentage: float):
+        self.markup_price = self.base_price * (1 + markup_percentage)
+        self.total_amount = self.markup_price * self.quantity
+
 # Create the tables if they don't exist
 User.metadata.create_all(bind=engine)
