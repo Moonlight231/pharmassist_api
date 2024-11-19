@@ -296,7 +296,7 @@ class Transaction(Base):
     transaction_markup = Column(Float)
     due_date = Column(Date)
     reference_number = Column(String, unique=True)
-    notes = Column(String, nullable=True)
+    void_reason = Column(String, nullable=True)
     is_void = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

@@ -21,7 +21,7 @@ class TransactionCreate(BaseModel):
     client_id: int
     transaction_terms: Optional[int] = None
     transaction_markup: Optional[float] = Field(ge=0, le=1, default=None)
-    notes: Optional[str] = None
+    initial_payment: Optional[float] = Field(ge=0, default=0)
     items: List[TransactionItemBase]
 
 class TransactionItemResponse(BaseModel):
@@ -47,7 +47,7 @@ class TransactionResponse(BaseModel):
     due_date: date
     transaction_terms: int
     transaction_markup: float
-    notes: Optional[str]
+    void_reason: Optional[str]
     is_void: bool
     items: List[TransactionItemResponse]
 
@@ -72,6 +72,9 @@ class TransactionFilter(BaseModel):
     end_date: Optional[date] = None
     payment_status: Optional[str] = None
     is_overdue: Optional[bool] = None
+
+class VoidTransaction(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
 
 # Endpoints
 @router.post('/', response_model=TransactionResponse)
@@ -107,22 +110,17 @@ def create_transaction(
     
     # Process items
     for item in transaction.items:
-        # Verify product availability and quantity
+        # Only verify if product is available for this branch type
         branch_product = db.query(BranchProduct).filter(
             BranchProduct.branch_id == user['branch_id'],
-            BranchProduct.product_id == item.product_id
+            BranchProduct.product_id == item.product_id,
+            BranchProduct.is_available == True
         ).first()
         
-        if not branch_product or not branch_product.is_available:
+        if not branch_product:
             raise HTTPException(
                 status_code=400,
-                detail=f"Product {item.product_id} is not available"
-            )
-            
-        if branch_product.active_quantity < item.quantity:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient quantity for product {item.product_id}"
+                detail=f"Product {item.product_id} is not available for this branch"
             )
         
         # Create transaction item
@@ -135,19 +133,32 @@ def create_transaction(
         
         total_amount += transaction_item.total_amount
         new_transaction.items.append(transaction_item)
-        
-        # Update branch product quantity
-        branch_product.quantity -= item.quantity
     
-    # Check credit limit
-    if total_amount > client.available_credit:
+    # Check credit limit against remaining balance after initial payment
+    remaining_balance = total_amount - transaction.initial_payment
+    if remaining_balance > client.available_credit:
         raise HTTPException(
             status_code=400,
-            detail=f"Transaction amount exceeds available credit. Available: {client.available_credit}"
+            detail=f"Remaining balance exceeds available credit. Available: {client.available_credit}"
         )
     
+    # Set payment status based on initial payment
+    if transaction.initial_payment >= total_amount:
+        payment_status = 'paid'
+        amount_paid = total_amount  # Cap at total amount to prevent overpayment
+    elif transaction.initial_payment > 0:
+        payment_status = 'partial'
+        amount_paid = transaction.initial_payment
+    else:
+        payment_status = 'pending'
+        amount_paid = 0
+    
     new_transaction.total_amount = total_amount
-    client.current_balance += total_amount
+    new_transaction.amount_paid = amount_paid
+    new_transaction.payment_status = payment_status
+    
+    # Update client balance with remaining amount
+    client.current_balance += remaining_balance
     
     db.add(new_transaction)
     db.commit()
@@ -208,6 +219,7 @@ def get_transaction(
 @router.post('/{transaction_id}/void')
 def void_transaction(
     transaction_id: int,
+    void_data: VoidTransaction,
     db: db_dependency,
     user: Annotated[dict, Depends(role_required([UserRole.WHOLESALER, UserRole.ADMIN]))]
 ):
@@ -226,18 +238,10 @@ def void_transaction(
             detail="You can only void transactions from your branch"
         )
     
-    # Return quantities to branch products
-    for item in transaction.items:
-        branch_product = db.query(BranchProduct).filter(
-            BranchProduct.branch_id == transaction.branch_id,
-            BranchProduct.product_id == item.product_id
-        ).first()
-        if branch_product:
-            branch_product.quantity += item.quantity
-    
     # Update client balance
     transaction.client.current_balance -= (transaction.total_amount - transaction.amount_paid)
     
+    transaction.void_reason = void_data.reason
     transaction.is_void = True
     db.commit()
     
@@ -266,14 +270,17 @@ def add_payment(
         )
     
     # Validate payment amount
-    if payment.amount > transaction.balance:
+    remaining_balance = transaction.balance
+    if payment.amount > remaining_balance:
         raise HTTPException(
             status_code=400,
-            detail=f"Payment amount exceeds remaining balance. Balance: {transaction.balance}"
+            detail=f"Payment amount exceeds remaining balance. Remaining: {remaining_balance}"
         )
     
     # Update transaction
     transaction.amount_paid += payment.amount
+    
+    # Update payment status
     if transaction.amount_paid >= transaction.total_amount:
         transaction.payment_status = 'paid'
     else:
