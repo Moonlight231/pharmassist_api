@@ -4,7 +4,7 @@ from typing import List, Optional, Annotated
 from pydantic import BaseModel, Field, computed_field
 from datetime import datetime, date, timedelta
 
-from api.models import Transaction, TransactionItem, Client, BranchProduct, ProductBatch, UserRole
+from api.models import Transaction, TransactionItem, Client, BranchProduct, ProductBatch, UserRole, Payment
 from api.deps import db_dependency, role_required
 
 router = APIRouter(
@@ -75,6 +75,19 @@ class TransactionFilter(BaseModel):
 
 class VoidTransaction(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
+
+class PaymentResponse(BaseModel):
+    id: int
+    transaction_id: int
+    client_id: int
+    amount: float
+    payment_date: date
+    recorded_by_id: int
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
 
 # Endpoints
 @router.post('/', response_model=TransactionResponse)
@@ -223,7 +236,15 @@ def void_transaction(
     db: db_dependency,
     user: Annotated[dict, Depends(role_required([UserRole.WHOLESALER, UserRole.ADMIN]))]
 ):
-    transaction = db.query(Transaction).options(joinedload(Transaction.items)).filter(Transaction.id == transaction_id).first()
+    transaction = (
+        db.query(Transaction)
+        .options(
+            joinedload(Transaction.items),
+            joinedload(Transaction.payments)
+        )
+        .filter(Transaction.id == transaction_id)
+        .first()
+    )
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     
@@ -238,7 +259,14 @@ def void_transaction(
             detail="You can only void transactions from your branch"
         )
     
-    # Update client balance
+    # Check if transaction has payments
+    if transaction.payments:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot void transaction with existing payments. Please void payments first."
+        )
+    
+    # Update client balance - only unpaid amount since there are no payments
     transaction.client.current_balance -= (transaction.total_amount - transaction.amount_paid)
     
     transaction.void_reason = void_data.reason
@@ -247,7 +275,7 @@ def void_transaction(
     
     return {"detail": "Transaction voided successfully"}
 
-@router.post('/{transaction_id}/payment')
+@router.post('/{transaction_id}/payment', response_model=PaymentResponse)
 def add_payment(
     transaction_id: int,
     payment: PaymentCreate,
@@ -277,6 +305,16 @@ def add_payment(
             detail=f"Payment amount exceeds remaining balance. Remaining: {remaining_balance}"
         )
     
+    # Create payment record
+    new_payment = Payment(
+        transaction_id=transaction.id,
+        client_id=transaction.client_id,
+        amount=payment.amount,
+        payment_date=payment.payment_date or date.today(),
+        recorded_by_id=user['id']
+    )
+    db.add(new_payment)
+    
     # Update transaction
     transaction.amount_paid += payment.amount
     
@@ -293,3 +331,49 @@ def add_payment(
     db.refresh(transaction)
     
     return transaction
+
+@router.post('/{transaction_id}/payment/{payment_id}/void')
+def void_payment(
+    transaction_id: int,
+    payment_id: int,
+    void_data: VoidTransaction,
+    db: db_dependency,
+    user: Annotated[dict, Depends(role_required([UserRole.WHOLESALER, UserRole.ADMIN]))]
+):
+    payment = db.query(Payment).filter(
+        Payment.id == payment_id,
+        Payment.transaction_id == transaction_id
+    ).first()
+    
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    
+    transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    
+    # Check branch access
+    if (user['role'] == UserRole.WHOLESALER.value and 
+        user['branch_id'] != transaction.branch_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only void payments from your branch"
+        )
+    
+    # Update transaction
+    transaction.amount_paid -= payment.amount
+    
+    # Update payment status
+    if transaction.amount_paid == 0:
+        transaction.payment_status = 'pending'
+    else:
+        transaction.payment_status = 'partial'
+    
+    # Update client balance
+    transaction.client.current_balance += payment.amount
+    
+    # Soft delete the payment
+    payment.is_void = True
+    payment.void_reason = void_data.reason
+    
+    db.commit()
+    
+    return {"detail": "Payment voided successfully"}

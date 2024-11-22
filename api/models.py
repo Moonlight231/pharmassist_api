@@ -381,6 +381,7 @@ class Transaction(Base):
     client = relationship("Client", backref="transactions")
     branch = relationship("Branch", backref="transactions")
     items = relationship("TransactionItem", back_populates="transaction", cascade="all, delete-orphan")
+    payments = relationship("Payment", back_populates="transaction")
 
     @classmethod
     def generate_reference(cls, db: Session, branch_id: int) -> str:
@@ -423,6 +424,25 @@ class TransactionItem(Base):
     def calculate_prices(self, markup_percentage: float):
         self.markup_price = self.base_price * (1 + markup_percentage)
         self.total_amount = self.markup_price * self.quantity
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transaction_id = Column(Integer, ForeignKey('transactions.id'), nullable=False)
+    client_id = Column(Integer, ForeignKey('clients.id'), nullable=False)
+    amount = Column(Float, nullable=False)
+    payment_date = Column(Date, nullable=False)
+    recorded_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    is_void = Column(Boolean, default=False)
+    void_reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    # Relationships
+    transaction = relationship("Transaction", back_populates="payments")
+    client = relationship("Client")
+    recorded_by = relationship("User")
 
 # Create the tables if they don't exist
 User.metadata.create_all(bind=engine)
