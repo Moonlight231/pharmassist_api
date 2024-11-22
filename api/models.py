@@ -172,17 +172,94 @@ class InvReportItem(Base):
                 InvReportBatch.batch_type == 'transfer'
             ).scalar() or 0
 
+class ExpenseScope(str, Enum):
+    BRANCH = "branch"           
+    MAIN_OFFICE = "main_office" 
+    COMPANY_WIDE = "company_wide"   
+
+class ExpenseType(str, Enum):
+    UTILITIES = "utilities"
+    SUPPLIES = "supplies"
+    MAINTENANCE = "maintenance"
+    SALARY = "salary"
+    RENT = "rent"
+    MARKETING = "marketing"
+    INVENTORY = "inventory"
+    OTHERS = "others"
+
 class Expense(Base):
     __tablename__ = "expenses"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String)
-    type = Column(String)
-    amount = Column(Float)
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
     date_created = Column(Date, default=date.today)
-    branch_id = Column(Integer, ForeignKey('branches.id'))
     description = Column(String)
     vendor = Column(String)
+    scope = Column(String, nullable=False, default=ExpenseScope.BRANCH)
+    branch_id = Column(Integer, ForeignKey('branches.id'), nullable=True)
+    created_by_id = Column(Integer, ForeignKey('users.id'))
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    # Relationships
+    branch = relationship("Branch", backref="expenses")
+    created_by = relationship("User", backref="created_expenses")
+
+    @classmethod
+    def get_branch_expenses(cls, db: Session, branch_id: int, start_date: date = None, end_date: date = None):
+        """Get only branch-specific expenses"""
+        query = db.query(cls).filter(
+            cls.scope == ExpenseScope.BRANCH,
+            cls.branch_id == branch_id
+        )
+        if start_date:
+            query = query.filter(cls.date_created >= start_date)
+        if end_date:
+            query = query.filter(cls.date_created <= end_date)
+        return query.all()
+
+    @classmethod
+    def get_company_wide_expenses(cls, db: Session, start_date: date = None, end_date: date = None):
+        """Get company-wide expenses"""
+        query = db.query(cls).filter(cls.scope == ExpenseScope.COMPANY_WIDE)
+        if start_date:
+            query = query.filter(cls.date_created >= start_date)
+        if end_date:
+            query = query.filter(cls.date_created <= end_date)
+        return query.all()
+
+    @classmethod
+    def get_main_office_expenses(cls, db: Session, start_date: date = None, end_date: date = None):
+        """Get main office expenses"""
+        query = db.query(cls).filter(cls.scope == ExpenseScope.MAIN_OFFICE)
+        if start_date:
+            query = query.filter(cls.date_created >= start_date)
+        if end_date:
+            query = query.filter(cls.date_created <= end_date)
+        return query.all()
+
+    @classmethod
+    def get_expenses_by_type(cls, db: Session, scope: str = None, branch_id: int = None, 
+                           start_date: date = None, end_date: date = None):
+        """Get expense breakdown by type with optional filters"""
+        query = db.query(
+            cls.type,
+            func.sum(cls.amount).label('total_amount')
+        )
+        
+        if scope:
+            query = query.filter(cls.scope == scope)
+        if branch_id and scope == ExpenseScope.BRANCH:
+            query = query.filter(cls.branch_id == branch_id)
+            
+        if start_date:
+            query = query.filter(cls.date_created >= start_date)
+        if end_date:
+            query = query.filter(cls.date_created <= end_date)
+            
+        return query.group_by(cls.type).all()
 
 class Supplier(Base):
     __tablename__ = "suppliers"
