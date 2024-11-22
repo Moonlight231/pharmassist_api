@@ -265,10 +265,15 @@ class Supplier(Base):
     __tablename__ = "suppliers"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String)
+    name = Column(String, nullable=False)
+    contact_person = Column(String)
     phone = Column(String)
     email = Column(String)
     address = Column(String)
+    is_active = Column(Boolean, default=True)
+    notes = Column(String)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 class ProductBatch(Base):
     __tablename__ = "product_batches"
