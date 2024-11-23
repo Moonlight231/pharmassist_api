@@ -84,6 +84,8 @@ class PaymentResponse(BaseModel):
     payment_date: date
     recorded_by_id: int
     created_at: datetime
+    is_void: bool
+    void_reason: Optional[str] = None
 
     model_config = {
         "from_attributes": True
@@ -173,9 +175,22 @@ def create_transaction(
     # Update client balance with remaining amount
     client.current_balance += remaining_balance
     
+    # First commit the transaction to get the ID
     db.add(new_transaction)
     db.commit()
     db.refresh(new_transaction)
+    
+    # Create payment record if there's an initial payment
+    if amount_paid > 0:
+        initial_payment = Payment(
+            transaction_id=new_transaction.id,  # Now we have the transaction ID
+            client_id=client.id,
+            amount=amount_paid,
+            payment_date=date.today(),
+            recorded_by_id=user['id']
+        )
+        db.add(initial_payment)
+        db.commit()
     
     return new_transaction
 
@@ -185,17 +200,17 @@ def get_transactions(
     user: Annotated[dict, Depends(role_required([UserRole.WHOLESALER, UserRole.ADMIN]))],
     skip: int = 0,
     limit: int = 100,
-    client_id: Optional[int] = None
+    client_id: Optional[int] = None,
+    include_void: bool = False
 ):
-    # Following pattern from inventory_reports get endpoint
-    startLine: 437
-    endLine: 462
-    
     query = (
         db.query(Transaction)
         .options(joinedload(Transaction.items))
-        .filter(Transaction.is_void == False)
     )
+    
+    # Only filter out void transactions if include_void is False
+    if not include_void:
+        query = query.filter(Transaction.is_void == False)
     
     # Non-admin users can only see transactions from their branch
     if user['role'] == UserRole.WHOLESALER.value:
@@ -259,15 +274,22 @@ def void_transaction(
             detail="You can only void transactions from your branch"
         )
     
-    # Check if transaction has payments
-    if transaction.payments:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot void transaction with existing payments. Please void payments first."
-        )
+    # Void all payments first
+    for payment in transaction.payments:
+        if not payment.is_void:
+            payment.is_void = True
+            payment.void_reason = f"Transaction voided: {void_data.reason}"
+            # Update client balance for each payment
+            transaction.client.current_balance += payment.amount
+            # Update transaction amount_paid
+            transaction.amount_paid -= payment.amount
     
-    # Update client balance - only unpaid amount since there are no payments
-    transaction.client.current_balance -= (transaction.total_amount - transaction.amount_paid)
+    # Update payment status
+    transaction.payment_status = 'pending'
+    
+    # Update client balance - only unpaid amount if any remains
+    if transaction.balance > 0:
+        transaction.client.current_balance -= transaction.balance
     
     transaction.void_reason = void_data.reason
     transaction.is_void = True
@@ -328,9 +350,9 @@ def add_payment(
     transaction.client.current_balance -= payment.amount
     
     db.commit()
-    db.refresh(transaction)
+    db.refresh(new_payment)
     
-    return transaction
+    return new_payment
 
 @router.post('/{transaction_id}/payment/{payment_id}/void')
 def void_payment(
@@ -377,3 +399,32 @@ def void_payment(
     db.commit()
     
     return {"detail": "Payment voided successfully"}
+
+@router.get('/{transaction_id}/payments', response_model=List[PaymentResponse])
+def get_transaction_payments(
+    transaction_id: int,
+    db: db_dependency,
+    user: Annotated[dict, Depends(role_required([UserRole.WHOLESALER, UserRole.ADMIN]))],
+    include_void: bool = False
+):
+    # Get transaction and verify access
+    transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    # Check branch access
+    if (user['role'] == UserRole.WHOLESALER.value and 
+        user['branch_id'] != transaction.branch_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only view payments for transactions from your branch"
+        )
+    
+    # Query payments
+    query = db.query(Payment).filter(Payment.transaction_id == transaction_id)
+    
+    # Exclude void payments unless specifically requested
+    if not include_void:
+        query = query.filter(Payment.is_void == False)
+    
+    return query.order_by(Payment.payment_date.desc()).all()
