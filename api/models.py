@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Table, Float, Date, select, DateTime
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Table, Float, Date, select, DateTime, ARRAY
 from sqlalchemy.orm import relationship, column_property
 from .database import Base, engine
 from datetime import date, datetime
@@ -40,7 +40,7 @@ class Branch(Base):
     branch_products = relationship("BranchProduct", back_populates="branch")
     users = relationship("User", back_populates="branch")
     clients = relationship("Client", back_populates="branch")
-
+    invreports = relationship("InvReport", back_populates="branch")
 class Product(Base):
     __tablename__ = "products"
 
@@ -111,7 +111,13 @@ class InvReport(Base):
     created_at = Column(DateTime, default=datetime.now)
     start_date = Column(Date)
     end_date = Column(Date)
+    viewed_by = Column(Integer, nullable=True)  # Single admin user ID who viewed the report
     items = relationship("InvReportItem", back_populates="invreport")
+    branch = relationship("Branch", back_populates="invreports")
+
+    @property
+    def is_viewed(self) -> bool:
+        return self.viewed_by is not None
 
 class InvReportItem(Base):
     __tablename__ = "invreport_items"

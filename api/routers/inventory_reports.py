@@ -78,15 +78,27 @@ class InvReportCreate(BaseModel):
     end_date: date
     items: List[InvReportItemBase]
 
+class ProductResponse(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        from_attributes = True
+
 class InvReportItemResponse(BaseModel):
     id: int
     product_id: int
+    product: ProductResponse
     beginning: int
     offtake: int
     selling_area: int
     current_cost: float
     current_srp: float
     batches: List[BatchInfo]
+
+    @computed_field
+    def product_name(self) -> str:
+        return self.product.name if self.product else "Unknown Product"
 
     @computed_field
     def deliver(self) -> int:
@@ -104,6 +116,19 @@ class InvReportItemResponse(BaseModel):
     def peso_value(self) -> float:
         return self.selling_area * self.current_srp
 
+    class Config:
+        from_attributes = True
+
+class Branch(BaseModel):
+    id: int
+    branch_name: str
+    location: str
+    branch_type: str
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
 class InvReportResponse(BaseModel):
     id: int
     branch_id: int
@@ -111,13 +136,23 @@ class InvReportResponse(BaseModel):
     start_date: date
     end_date: date
     items: List[InvReportItemResponse]
-
-    class Config:
-        from_attributes = True
+    branch: Optional[Branch]
+    viewed_by: Optional[int] = None
 
     @computed_field
     def items_count(self) -> int:
         return len(self.items)
+
+    @computed_field
+    def branch_name(self) -> str:
+        return self.branch.branch_name if self.branch else "Unknown Branch"
+
+    @computed_field
+    def is_viewed(self) -> bool:
+        return self.viewed_by is not None
+
+    class Config:
+        from_attributes = True
 
 def update_batch_quantities(db: Session, branch_id: int, product_id: int, used_quantity: int):
     remaining = used_quantity
@@ -429,6 +464,11 @@ def get_inventory_report(
             detail="You can only view reports for your assigned branch"
         )
     
+    # Automatically mark as viewed for admins
+    if user['role'] == UserRole.ADMIN.value and report.viewed_by is None:
+        report.viewed_by = user['id']
+        db.commit()
+    
     # Sort items by product name
     report.items.sort(key=lambda x: x.product.name)
     
@@ -445,13 +485,15 @@ def get_all_inventory_reports(
         db.query(InvReport)
         .options(
             joinedload(InvReport.items.of_type(InvReportItem))
-            .joinedload(InvReportItem.product)
+            .joinedload(InvReportItem.product),
+            joinedload(InvReport.branch)
         )
     )
     
     # Filter by branch for non-admin users
     if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value]:
         query = query.filter(InvReport.branch_id == user['branch_id'])
+    
     
     reports = query.order_by(InvReport.created_at.desc()).offset(skip).limit(limit).all()
     
@@ -480,7 +522,8 @@ def get_branch_inventory_reports(
         db.query(InvReport)
         .options(
             joinedload(InvReport.items.of_type(InvReportItem))
-            .joinedload(InvReportItem.product)
+            .joinedload(InvReportItem.product),
+            joinedload(InvReport.branch)
         )
         .filter(InvReport.branch_id == branch_id)
         .order_by(InvReport.created_at.desc())
@@ -636,3 +679,21 @@ def get_product_batches(
         "warning": sum(1 for b in combined_batches if b["status"] == "warning"),
         "batches": combined_batches
     }
+
+@router.post('/{report_id}/mark-viewed', response_model=dict)
+def mark_report_as_viewed(
+    report_id: int,
+    db: db_dependency,
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN]))],
+):
+    report = db.query(InvReport).filter(InvReport.id == report_id).first()
+    
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    
+    # Only mark as viewed if not already viewed
+    if report.viewed_by is None:
+        report.viewed_by = user['id']
+        db.commit()
+    
+    return {"message": "Report marked as viewed", "viewed_by": report.viewed_by}

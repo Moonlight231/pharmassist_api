@@ -38,6 +38,7 @@ class BranchProductResponse(BranchProductBase):
     is_wholesale_available: bool
     retail_low_stock_threshold: int
     wholesale_low_stock_threshold: int
+    product_name: str
 
     model_config = ConfigDict(
         from_attributes=True
@@ -181,7 +182,8 @@ def get_branch_products(
                 "is_retail_available": product.is_retail_available,
                 "is_wholesale_available": product.is_wholesale_available,
                 "retail_low_stock_threshold": product.retail_low_stock_threshold,
-                "wholesale_low_stock_threshold": product.wholesale_low_stock_threshold
+                "wholesale_low_stock_threshold": product.wholesale_low_stock_threshold,
+                "product_name": product.name
             }
             response.append(response_item)
     
@@ -398,7 +400,8 @@ def get_low_stock_summary(
                 "is_retail_available": product.is_retail_available,
                 "is_wholesale_available": product.is_wholesale_available,
                 "retail_low_stock_threshold": product.retail_low_stock_threshold,
-                "wholesale_low_stock_threshold": product.wholesale_low_stock_threshold
+                "wholesale_low_stock_threshold": product.wholesale_low_stock_threshold,
+                "product_name": product.name
             }
             low_stock_products.append(response_item)
     

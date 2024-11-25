@@ -111,22 +111,42 @@ def delete_product(
     db: db_dependency, 
     user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
 ):
-    # Check if product has any active branch products
-    active_branch_products = db.query(BranchProduct).filter(
-        BranchProduct.product_id == product_id,
-        BranchProduct.is_available == True
-    ).first()
-    
-    if active_branch_products:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot delete product while it is active in branches"
-        )
-
+    # First check if product exists
     db_product = db.query(Product).filter(Product.id == product_id).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
+
+    # Get all branch products for this product
+    branch_products = db.query(BranchProduct).filter(
+        BranchProduct.product_id == product_id
+    ).all()
+
+    # Check if product is active in any branch and has non-zero quantity
+    has_active_stock = False
+    for bp in branch_products:
+        if bp.is_available and bp.quantity > 0:
+            has_active_stock = True
+            break
+
+    if has_active_stock:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete product while it is active and has stock in branches"
+        )
+
+    # Delete all associated branch_products first
+    for bp in branch_products:
+        db.delete(bp)
     
+    # Then delete the product
     db.delete(db_product)
-    db.commit()
-    return {"detail": "Product deleted successfully"}
+    
+    try:
+        db.commit()
+        return {"detail": "Product deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting product: {str(e)}"
+        )
