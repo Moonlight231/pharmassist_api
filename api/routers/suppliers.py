@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Annotated
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from datetime import datetime
 
 from api.models import Supplier, UserRole
@@ -16,7 +16,7 @@ class SupplierBase(BaseModel):
     name: str
     contact_person: Optional[str] = None
     phone: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     address: Optional[str] = None
     notes: Optional[str] = None
 
@@ -27,7 +27,7 @@ class SupplierUpdate(BaseModel):
     name: Optional[str] = None
     contact_person: Optional[str] = None
     phone: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     address: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
@@ -106,5 +106,20 @@ def toggle_supplier_status(
     
     db.commit()
     db.refresh(supplier)
+    
+    return supplier
+
+@router.delete('/{supplier_id}', response_model=SupplierResponse)
+def delete_supplier(
+    supplier_id: int,
+    db: db_dependency,
+    user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
+):
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    
+    db.delete(supplier)
+    db.commit()
     
     return supplier

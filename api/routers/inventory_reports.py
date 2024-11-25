@@ -565,10 +565,10 @@ class BranchExpiringBatchesResponse(BaseModel):
 def get_branch_expiring_batches(
     branch_id: int,
     db: db_dependency,
-    user: Annotated[dict, Depends(role_required([UserRole.PHARMACIST, UserRole.WHOLESALER]))]
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
-    # Check if user is assigned to this branch
-    if user['branch_id'] != branch_id:
+    # Check if user is assigned to this branch (only for non-admin users)
+    if user['role'] != UserRole.ADMIN.value and user['branch_id'] != branch_id:
         raise HTTPException(
             status_code=403,
             detail="You can only view expiring batches for your assigned branch"

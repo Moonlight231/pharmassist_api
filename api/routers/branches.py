@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Annotated, List, Optional
 from pydantic import BaseModel
+from datetime import datetime, timedelta
+import sqlalchemy as sa
 
-from api.models import Branch, UserRole, Product, BranchProduct
+from api.models import Branch, UserRole, Product, BranchProduct, ProductBatch
 from api.deps import db_dependency, role_required
 
 router = APIRouter(
@@ -27,6 +29,8 @@ class BranchUpdate(BaseModel):
 class BranchResponse(BranchBase):
     id: int
     branch_type: str
+    has_low_stock: bool = False
+    has_near_expiry: bool = False
 
     class Config:
         from_attributes = True
@@ -60,17 +64,52 @@ def create_branch(
     return new_branch
 
 @router.get('/', response_model=List[BranchResponse])
-def get_all_branches(
-    db: db_dependency, 
-    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))]
+def get_branches(
+    db: db_dependency,
+    user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
 ):
     query = db.query(Branch)
     
-    # Non-admin users can only see their branch
+    # Non-admin users can only view their own branch
     if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value]:
         query = query.filter(Branch.id == user['branch_id'])
     
-    return query.all()
+    branches = query.all()
+    
+    for branch in branches:
+        # Get branch products that are available with their batches
+        branch_products = (
+            db.query(BranchProduct)
+            .options(joinedload(BranchProduct.batches))
+            .filter(
+                BranchProduct.branch_id == branch.id,
+                BranchProduct.is_available == True
+            )
+            .all()
+        )
+        
+        # Check for low stock
+        has_low_stock = any(bp.is_low_stock for bp in branch_products)
+        
+        # Check for near expiry or expired (30 days threshold)
+        thirty_days_from_now = datetime.now().date() + timedelta(days=30)
+        today = datetime.now().date()
+        
+        has_near_expiry = any(
+            any(
+                batch.is_active and (
+                    batch.expiration_date <= thirty_days_from_now or  # Near expiry
+                    batch.expiration_date <= today  # Already expired
+                )
+                for batch in bp.batches
+            )
+            for bp in branch_products
+        )
+        
+        branch.has_low_stock = has_low_stock
+        branch.has_near_expiry = has_near_expiry
+    
+    return branches
 
 @router.get('/{branch_id}', response_model=BranchResponse)
 def get_branch(
@@ -89,6 +128,28 @@ def get_branch(
             status_code=403,
             detail="You can only view your assigned branch"
         )
+    
+    # Get branch products
+    branch_products = (
+        db.query(BranchProduct)
+        .filter(
+            BranchProduct.branch_id == branch_id,
+            BranchProduct.is_available == True
+        )
+        .all()
+    )
+
+    # Check for low stock and near expiry using branch products
+    has_low_stock = any(bp.is_low_stock for bp in branch_products)
+    has_near_expiry = any(
+        bp.current_expiration_date 
+        and bp.current_expiration_date <= datetime.now().date() + timedelta(days=30)
+        for bp in branch_products
+    )
+
+    # Add the status to the branch response
+    branch.has_low_stock = has_low_stock
+    branch.has_near_expiry = has_near_expiry
     
     return branch
 
