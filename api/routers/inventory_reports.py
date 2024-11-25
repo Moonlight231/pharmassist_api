@@ -119,7 +119,7 @@ class InvReportItemResponse(BaseModel):
     class Config:
         from_attributes = True
 
-class Branch(BaseModel):
+class BranchResponse(BaseModel):
     id: int
     branch_name: str
     location: str
@@ -136,7 +136,7 @@ class InvReportResponse(BaseModel):
     start_date: date
     end_date: date
     items: List[InvReportItemResponse]
-    branch: Optional[Branch]
+    branch: Optional[BranchResponse]
     viewed_by: Optional[int] = None
 
     @computed_field

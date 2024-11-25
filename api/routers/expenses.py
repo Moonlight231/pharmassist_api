@@ -34,11 +34,21 @@ class ExpenseUpdate(BaseModel):
     vendor: Optional[str] = None
     date_created: Optional[date] = None
 
+class BranchResponse(BaseModel):
+    id: int
+    name: str = Field(alias="branch_name")
+    
+    model_config = {
+        "from_attributes": True,
+        "populate_by_name": True
+    }
+
 class ExpenseResponse(ExpenseBase):
     id: int
     created_by_id: int
     created_at: datetime
     updated_at: datetime
+    branch: Optional[BranchResponse] = None
 
     model_config = {
         "from_attributes": True
@@ -79,7 +89,7 @@ def get_expenses(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None
 ):
-    query = db.query(Expense)
+    query = db.query(Expense).options(joinedload(Expense.branch))
     
     if scope:
         query = query.filter(Expense.scope == scope)
@@ -134,13 +144,20 @@ def get_expense_analytics(
     highest_category_percentage = (highest_category[1] / current_total * 100 
                                  if current_total > 0 else 0)
 
+    # Get latest expense details
+    latest_expense = (
+        query.filter(Expense.date_created >= start_date)
+        .order_by(Expense.created_at.desc())
+        .first()
+    )
+
     return {
         "total_amount": current_total,
         "daily_average": current_total / days if days > 0 else 0,
         "highest_category": highest_category[0],
         "highest_category_percentage": highest_category_percentage,
         "month_over_month_change": month_over_month,
-        "last_expense_date": max([e.date_created for e in current_expenses]) if current_expenses else today,
+        "last_expense_date": latest_expense.created_at if latest_expense else datetime.now(),
         "category_distribution": [
             {"category": cat, "amount": amt} 
             for cat, amt in category_totals.items()
