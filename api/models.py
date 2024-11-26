@@ -22,6 +22,7 @@ class User(Base):
     has_changed_password = Column(Boolean, default=False)
     role = Column(String)
     branch_id = Column(Integer, ForeignKey('branches.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
     branch = relationship("Branch", back_populates="users")
     profile = relationship("Profile", back_populates="user", uselist=False)
 

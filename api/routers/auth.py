@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import os
 from api.models import User, UserRole, Branch, Profile
 from api.deps import db_dependency, bcrypt_context, user_dependency, role_required
+from sqlalchemy.orm import joinedload
 
 load_dotenv()
 
@@ -320,3 +321,43 @@ async def get_initial_password(
         "username": user.username,
         "initial_password": user.initial_password
     }
+
+@router.get("/users")
+async def get_users(
+    db: db_dependency,
+    current_user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
+):
+    try:
+        users = db.query(User).options(
+            joinedload(User.profile),
+            joinedload(User.branch)
+        ).all()
+        
+        return [
+            {
+                "id": user.id,
+                "username": user.username,
+                "role": user.role,
+                "branch_id": user.branch_id,
+                "has_changed_password": user.has_changed_password,
+                "created_at": user.created_at.isoformat() if hasattr(user, 'created_at') and user.created_at else None,
+                "profile": {
+                    "first_name": user.profile.first_name,
+                    "last_name": user.profile.last_name,
+                    "email": user.profile.email,
+                    "phone_number": user.profile.phone_number,
+                    "license_number": user.profile.license_number
+                } if user.profile else None,
+                "branch": {
+                    "id": user.branch.id,
+                    "branch_name": user.branch.branch_name,
+                    "branch_type": user.branch.branch_type
+                } if user.branch else None
+            }
+            for user in users
+        ]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
