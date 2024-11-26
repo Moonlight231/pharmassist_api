@@ -81,6 +81,11 @@ class ProfileResponse(BaseModel):
 class MessageResponse(BaseModel):
     message: str
 
+class InitialCredentialsUpdateRequest(BaseModel):
+    current_password: str
+    new_username: str
+    new_password: str
+
 def authenticate_user(username: str, password: str, db):
     user = db.query(User).filter(User.username == username).first()
     if not user:
@@ -359,5 +364,63 @@ async def get_users(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.put("/initial-credentials", status_code=status.HTTP_200_OK)
+async def update_initial_credentials(
+    db: db_dependency,
+    credentials_data: InitialCredentialsUpdateRequest,
+    current_user: user_dependency
+):
+    # Get user
+    user = db.query(User).filter(User.id == current_user['id']).first()
+    
+    # Verify current password
+    if not bcrypt_context.verify(credentials_data.current_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect"
+        )
+    
+    # Check if new username already exists
+    existing_user = db.query(User).filter(
+        User.username == credentials_data.new_username,
+        User.id != current_user['id']
+    ).first()
+    
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already exists"
+        )
+    
+    try:
+        # Update both username and password
+        user.username = credentials_data.new_username
+        user.hashed_password = bcrypt_context.hash(credentials_data.new_password)
+        user.has_changed_password = True
+        user.initial_password = None
+        
+        db.commit()
+        
+        # Generate new token with updated username
+        new_token = create_access_token(
+            user.username,
+            user.id,
+            UserRole(user.role),
+            user.branch_id,
+            timedelta(hours=12)
+        )
+        
+        return {
+            "message": "Credentials updated successfully",
+            "access_token": new_token,
+            "token_type": "bearer"
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
