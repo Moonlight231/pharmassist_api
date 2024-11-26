@@ -424,3 +424,39 @@ async def update_initial_credentials(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+
+@router.post("/reset-password/{user_id}", status_code=status.HTTP_200_OK)
+async def reset_password(
+    user_id: int,
+    db: db_dependency,
+    current_user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
+):
+    # Get user
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Generate new random password
+    new_password = ''.join(__import__('random').choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=10))
+    
+    # Update password
+    user.hashed_password = bcrypt_context.hash(new_password)
+    user.has_changed_password = False
+    user.initial_password = new_password
+    
+    try:
+        db.commit()
+        return {
+            "message": "Password reset successfully",
+            "username": user.username,
+            "new_password": new_password
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
