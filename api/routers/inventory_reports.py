@@ -5,7 +5,7 @@ from typing import List, Optional, Annotated
 from pydantic import BaseModel, computed_field
 from datetime import date, datetime, timedelta
 
-from api.models import Branch, InvReport, InvReportItem, BranchProduct, Product, UserRole, ProductBatch, InvReportBatch
+from api.models import Branch, InvReport, InvReportItem, BranchProduct, Product, UserRole, ProductBatch, InvReportBatch, AnalyticsTimeSeries
 from api.deps import db_dependency, role_required
 
 router = APIRouter(
@@ -435,6 +435,25 @@ def create_inventory_report(
         .filter(InvReport.id == new_report.id)
         .first()
     )
+    
+    # Record inventory metrics
+    for item in complete_report.items:
+        AnalyticsTimeSeries.record_metric(
+            db,
+            "inventory_level",
+            item.selling_area,
+            product_id=item.product_id,
+            branch_id=complete_report.branch_id
+        )
+        
+        if item.offtake > 0:
+            AnalyticsTimeSeries.record_metric(
+                db,
+                "product_offtake",
+                item.offtake,
+                product_id=item.product_id,
+                branch_id=complete_report.branch_id
+            )
     
     return complete_report
 

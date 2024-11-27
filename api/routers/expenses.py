@@ -4,7 +4,7 @@ from typing import List, Optional, Annotated
 from pydantic import BaseModel, Field, computed_field
 from datetime import date, datetime, timedelta
 
-from api.models import Expense, ExpenseScope, ExpenseType, Branch, UserRole
+from api.models import Expense, ExpenseScope, ExpenseType, Branch, UserRole, AnalyticsTimeSeries
 from api.deps import db_dependency, role_required
 
 router = APIRouter(
@@ -76,6 +76,15 @@ def create_expense(
     db.add(db_expense)
     db.commit()
     db.refresh(db_expense)
+
+    # Record the expense metric
+    AnalyticsTimeSeries.record_metric(
+        db,
+        "expense",
+        db_expense.amount,
+        branch_id=db_expense.branch_id
+    )
+
     return db_expense
 
 @router.get("/", response_model=List[ExpenseResponse])
