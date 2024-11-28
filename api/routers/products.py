@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Annotated, List
 from fastapi import APIRouter, HTTPException, status, Depends
 
-from api.models import Product, UserRole, Branch, BranchProduct
+from api.models import Product, UserRole, Branch, BranchProduct, PriceHistory
 from api.deps import db_dependency, user_dependency, role_required
 
 router = APIRouter(
@@ -93,10 +93,18 @@ def update_product(
     db: db_dependency,
     user: Annotated[dict, Depends(role_required(UserRole.ADMIN))]
 ):
-    # Only ADMIN can update products
     db_product = db.query(Product).filter(Product.id == product_id).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
+    
+    # If cost or srp is being updated, record it in price history
+    if product.cost is not None or product.srp is not None:
+        price_history = PriceHistory(
+            product_id=product_id,
+            cost=product.cost if product.cost is not None else db_product.cost,
+            srp=product.srp if product.srp is not None else db_product.srp
+        )
+        db.add(price_history)
     
     for key, value in product.model_dump(exclude_unset=True).items():
         setattr(db_product, key, value)

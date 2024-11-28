@@ -58,6 +58,7 @@ class Product(Base):
     branch_products = relationship("BranchProduct", back_populates="product")
     inv_report_items = relationship("InvReportItem", back_populates="product")
     analytics = relationship("AnalyticsTimeSeries", back_populates="product")
+    price_history = relationship("PriceHistory", back_populates="product")
 
 class BranchProduct(Base):
     __tablename__ = "branch_products"
@@ -463,41 +464,40 @@ class AnalyticsTimeSeries(Base):
     __tablename__ = "analytics_timeseries"
 
     id = Column(Integer, primary_key=True, index=True)
-    metric_type = Column(String(50), nullable=False)
-    metric_value = Column(Float, nullable=False)
-    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=True)
-    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
-    timestamp = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=func.now())
+    metric_name = Column(String, nullable=False)  # e.g., 'revenue', 'expenses', 'profit'
+    value = Column(Float, nullable=False)
+    timestamp = Column(DateTime, default=datetime.now)
+    branch_id = Column(Integer, ForeignKey('branches.id'), nullable=True)
+    product_id = Column(Integer, ForeignKey('products.id'), nullable=True)
 
+    # Relationships
     branch = relationship("Branch", back_populates="analytics")
     product = relationship("Product", back_populates="analytics")
 
     @classmethod
-    def record_metric(cls, db: Session, metric_type: str, metric_value: float, 
+    def record_metric(cls, db: Session, metric_name: str, value: float, 
                      branch_id: Optional[int] = None, product_id: Optional[int] = None):
-        record = cls(
-            metric_type=metric_type,
-            metric_value=metric_value,
+        """Record a new metric data point"""
+        metric = cls(
+            metric_name=metric_name,
+            value=value,
             branch_id=branch_id,
-            product_id=product_id,
-            timestamp=datetime.now()
+            product_id=product_id
         )
-        db.add(record)
+        db.add(metric)
         db.commit()
-        return record
+        return metric
 
-    @classmethod
-    def get_metrics(cls, db: Session, metric_type: str, start_date: datetime, 
-                   end_date: datetime, branch_id: Optional[int] = None):
-        query = db.query(cls).filter(
-            cls.metric_type == metric_type,
-            cls.timestamp >= start_date,
-            cls.timestamp <= end_date
-        )
-        if branch_id:
-            query = query.filter(cls.branch_id == branch_id)
-        return query.all()
+class PriceHistory(Base):
+    __tablename__ = 'price_history'
+    
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey('products.id'))
+    date = Column(DateTime, default=func.now())
+    cost = Column(Float, nullable=False)
+    srp = Column(Float, nullable=False)
+    
+    product = relationship("Product", back_populates="price_history")
 
 # Create the tables if they don't exist
 User.metadata.create_all(bind=engine)
