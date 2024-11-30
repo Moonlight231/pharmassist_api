@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, and_
 from datetime import datetime, timedelta, date
 from typing import List, Optional, Annotated
 from pydantic import BaseModel, Field
@@ -625,20 +625,38 @@ async def get_product_analytics(
             InvReport.branch_id,
             Branch.branch_name,
             Branch.branch_type,
-            func.sum(InvReportItem.offtake).label('total_quantity')
+            func.sum(InvReportItem.offtake).label('total_quantity'),
+            func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('total_revenue'),
+            func.sum(InvReportItem.offtake * InvReportItem.current_cost).label('total_cost'),
+            BranchProduct.is_available,
+            Product.is_retail_available,
+            Product.is_wholesale_available
         )
         .select_from(InvReportItem)
         .join(InvReport, InvReport.id == InvReportItem.invreport_id)
         .join(Branch, Branch.id == InvReport.branch_id)
+        .join(BranchProduct, and_(
+            BranchProduct.product_id == InvReportItem.product_id,
+            BranchProduct.branch_id == InvReport.branch_id
+        ))
+        .join(Product, Product.id == InvReportItem.product_id)
         .filter(
             InvReportItem.product_id == product_id,
             InvReport.created_at >= start_date,
-            InvReport.created_at <= end_date
+            InvReport.created_at <= end_date,
+            BranchProduct.is_available == True,
+            sa.case(
+                (Branch.branch_type == 'wholesale', Product.is_wholesale_available),
+                else_=Product.is_retail_available
+            )
         )
         .group_by(
             InvReport.branch_id,
             Branch.branch_name,
-            Branch.branch_type
+            Branch.branch_type,
+            BranchProduct.is_available,
+            Product.is_retail_available,
+            Product.is_wholesale_available
         )
         .all()
     )
@@ -649,7 +667,12 @@ async def get_product_analytics(
             "branch_id": sale.branch_id,
             "branch_name": sale.branch_name,
             "branch_type": sale.branch_type,
-            "quantity": int(sale.total_quantity)
+            "quantity": int(sale.total_quantity),
+            "revenue": float(sale.total_revenue) if sale.total_revenue else 0,
+            "cost": float(sale.total_cost) if sale.total_cost else 0,
+            "gross_profit": float(sale.total_revenue - sale.total_cost) if sale.total_revenue and sale.total_cost else 0,
+            "profit_margin": float((sale.total_revenue - sale.total_cost) / sale.total_revenue * 100) 
+                if sale.total_revenue and sale.total_cost and sale.total_revenue > 0 else 0
         }
         for sale in branch_sales
     ]
