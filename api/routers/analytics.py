@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, desc, case, distinct
+from sqlalchemy import func, desc
 from datetime import datetime, timedelta, date
 from typing import List, Optional, Annotated
 from pydantic import BaseModel, Field
@@ -62,6 +62,7 @@ class BranchStock(BaseModel):
     stock: int
     is_available: bool
     branch_type: str
+    is_low_stock: bool
 
 class StockAnalytics(BaseModel):
     total_stock: int
@@ -107,16 +108,9 @@ async def get_company_analytics(
         start_date = end_date - timedelta(days=365)
         prev_start_date = start_date - timedelta(days=365)
 
-    # Get active branches count
-    active_branches = db.query(func.count(Branch.id)).filter(Branch.is_active == True).scalar()
-
-    # Get inventory status
-    inventory_status = get_inventory_status(db)
-
     # Get sales data from inventory reports
     sales_data = db.query(
         InvReport.branch_id,
-        func.sum(InvReportItem.offtake).label('total_quantity'),
         func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('total_sales'),
         func.sum(
             InvReportItem.offtake * 
@@ -130,6 +124,17 @@ async def get_company_analytics(
         InvReport.end_date <= end_date
     ).group_by(InvReport.branch_id).all()
 
+    # Get previous period data
+    prev_sales_data = db.query(
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('total_sales')
+    ).join(
+        InvReport,
+        InvReportItem.invreport_id == InvReport.id
+    ).filter(
+        InvReport.end_date >= prev_start_date,
+        InvReport.end_date < start_date
+    ).scalar() or 0
+
     # Get expense data
     expense_data = db.query(
         Expense.branch_id,
@@ -142,10 +147,14 @@ async def get_company_analytics(
     # Calculate metrics
     total_revenue = sum(sale.total_sales for sale in sales_data)
     total_expenses = sum(expense.total_expenses for expense in expense_data)
-    total_sales = sum(sale.total_quantity for sale in sales_data)
     gross_profit = sum(sale.total_profit for sale in sales_data)
     net_profit = gross_profit - total_expenses
     profit_margin = (net_profit / total_revenue * 100) if total_revenue > 0 else 0
+
+    # Record daily metrics
+    AnalyticsTimeSeries.record_metric(db, "revenue", total_revenue)
+    AnalyticsTimeSeries.record_metric(db, "expenses", total_expenses)
+    AnalyticsTimeSeries.record_metric(db, "profit", net_profit)
 
     # Get branch performance
     branches = db.query(Branch).all()
@@ -154,170 +163,142 @@ async def get_company_analytics(
         branch_sales = next((s for s in sales_data if s.branch_id == branch.id), None)
         branch_expenses = next((e for e in expense_data if e.branch_id == branch.id), None)
         
-        if branch_sales or branch_expenses:  # Only include branches with activity
-            performance = {
-                "branch_id": branch.id,
-                "branch_name": branch.branch_name,
-                "total_sales": branch_sales.total_quantity if branch_sales else 0,
-                "revenue": branch_sales.total_sales if branch_sales else 0,
-                "total_expenses": branch_expenses.total_expenses if branch_expenses else 0,
-                "profit": (branch_sales.total_profit if branch_sales else 0) - 
-                         (branch_expenses.total_expenses if branch_expenses else 0)
+        performance = {
+            "branch_id": branch.id,
+            "branch_name": branch.branch_name,
+            "total_sales": branch_sales.total_sales if branch_sales else 0,
+            "total_expenses": branch_expenses.total_expenses if branch_expenses else 0,
+            "profit": (branch_sales.total_profit if branch_sales else 0) - 
+                     (branch_expenses.total_expenses if branch_expenses else 0),
+            "performance_metrics": {
+                "sales_growth": calculate_growth(
+                    prev_sales_data,
+                    branch_sales.total_sales if branch_sales else 0
+                ),
+                "profit_margin": calculate_profit_margin_percentage(
+                    branch_sales.total_profit if branch_sales else 0,
+                    branch_sales.total_sales if branch_sales else 0
+                ),
+                "expense_ratio": calculate_expense_ratio(
+                    branch_expenses.total_expenses if branch_expenses else 0,
+                    branch_sales.total_sales if branch_sales else 0
+                )
             }
-            branch_performance.append(performance)
+        }
+        branch_performance.append(performance)
+
+        # Record branch-specific metrics
+        if branch_sales:
+            AnalyticsTimeSeries.record_metric(
+                db, 
+                "branch_revenue", 
+                branch_sales.total_sales,
+                branch_id=branch.id
+            )
+        
+        if branch_expenses:
+            AnalyticsTimeSeries.record_metric(
+                db, 
+                "branch_expenses", 
+                branch_expenses.total_expenses,
+                branch_id=branch.id
+            )
+
+    # Get product analytics
+    product_performance = db.query(
+        Product.id,
+        Product.name,
+        func.sum(InvReportItem.offtake).label('total_quantity'),
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('total_revenue'),
+        func.sum(InvReportItem.offtake * InvReportItem.current_cost).label('total_cost')
+    ).join(
+        InvReportItem, 
+        Product.id == InvReportItem.product_id
+    ).join(
+        InvReport,
+        InvReport.id == InvReportItem.invreport_id
+    ).filter(
+        InvReport.end_date >= start_date,
+        InvReport.end_date <= end_date
+    ).group_by(Product.id).order_by(desc('total_revenue')).limit(10).all()
+
+    # Record product metrics
+    for product in product_performance:
+        AnalyticsTimeSeries.record_metric(
+            db,
+            "product_revenue",
+            product.total_revenue,
+            product_id=product.id
+        )
 
     # Get time series data
     time_series = get_time_series_data(db, start_date, end_date)
 
     return {
         "total_revenue": total_revenue,
-        "total_sales": total_sales,
         "total_expenses": total_expenses,
         "gross_profit": gross_profit,
         "net_profit": net_profit,
         "profit_margin": profit_margin,
-        "active_branches": active_branches,
         "branch_performance": branch_performance,
-        "top_products": get_top_products(db, start_date, end_date),
+        "top_products": [
+            {
+                "product_id": p.id,
+                "product_name": p.name,
+                "total_quantity": p.total_quantity,
+                "total_revenue": p.total_revenue,
+                "profit_margin": calculate_profit_margin(p)
+            }
+            for p in product_performance
+        ],
         "revenue_trend": time_series["revenue"],
         "expense_trend": time_series["expenses"],
-        "profit_trend": time_series["profit"],
-        "inventory": inventory_status
+        "profit_trend": time_series["profit"]
     }
 
-def get_inventory_status(db: Session):
-    """Get overall inventory status"""
-    # Get total products
-    total_products = db.query(func.count(Product.id)).scalar() or 0
-
-    # Get low stock items
-    low_stock_items = db.query(
-        BranchProduct,
-        Product,
-        func.sum(ProductBatch.quantity).label('total_quantity')
+def get_time_series_data(db: db_dependency, start_date: datetime, end_date: datetime):
+    """Get time series data for revenue, expenses, and profit"""
+    revenue_data = db.query(
+        func.date_trunc('day', InvReport.end_date).label('date'),
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('value')
     ).join(
-        Product
-    ).outerjoin(
-        ProductBatch,
-        sa.and_(
-            ProductBatch.product_id == BranchProduct.product_id,
-            ProductBatch.branch_id == BranchProduct.branch_id,
-            ProductBatch.is_active == True
-        )
-    ).group_by(
-        BranchProduct.product_id,
-        BranchProduct.branch_id,
-        Product.id
-    ).having(
-        sa.or_(
-            func.sum(ProductBatch.quantity) <= Product.retail_low_stock_threshold,
-            func.sum(ProductBatch.quantity) <= Product.wholesale_low_stock_threshold
-        )
-    ).all()
-
-    # Get out of stock items
-    out_of_stock = db.query(
-        func.count(BranchProduct.product_id.distinct())
-    ).join(
-        ProductBatch,
-        sa.and_(
-            ProductBatch.product_id == BranchProduct.product_id,
-            ProductBatch.branch_id == BranchProduct.branch_id,
-            ProductBatch.is_active == True
-        )
-    ).filter(
-        func.sum(ProductBatch.quantity) == 0
-    ).scalar() or 0
-
-    # Get near expiry items
-    near_expiry_date = datetime.now() + timedelta(days=30)
-    near_expiry = db.query(
-        func.count(ProductBatch.id)
-    ).filter(
-        ProductBatch.expiration_date <= near_expiry_date,
-        ProductBatch.expiration_date > datetime.now(),
-        ProductBatch.is_active == True,
-        ProductBatch.quantity > 0
-    ).scalar() or 0
-
-    return {
-        "total_products": total_products,
-        "low_stock_count": len(low_stock_items),
-        "out_of_stock_count": out_of_stock,
-        "near_expiry_count": near_expiry
-    }
-
-def get_top_products(db: Session, start_date: datetime, end_date: datetime, limit: int = 5):
-    """Get top performing products"""
-    products = db.query(
-        Product.id,
-        Product.name,
-        func.sum(InvReportItem.offtake).label('total_quantity'),
-        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('revenue'),
-        func.sum(
-            InvReportItem.offtake * 
-            (InvReportItem.current_srp - InvReportItem.current_cost)
-        ).label('profit')
-    ).join(
-        InvReportItem
-    ).join(
-        InvReport
+        InvReportItem,
+        InvReport.id == InvReportItem.invreport_id
     ).filter(
         InvReport.end_date >= start_date,
         InvReport.end_date <= end_date
-    ).group_by(
-        Product.id
-    ).order_by(
-        func.sum(InvReportItem.offtake * InvReportItem.current_srp).desc()
-    ).limit(limit).all()
+    ).group_by('date').order_by('date').all()
 
-    return [
-        {
-            "id": p.id,
-            "name": p.name,
-            "total_sales": p.total_quantity,
-            "revenue": p.revenue,
-            "profit_margin": (p.profit / p.revenue * 100) if p.revenue > 0 else 0
-        }
-        for p in products
-    ]
-
-def get_time_series_data(db: Session, start_date: datetime, end_date: datetime) -> dict:
-    """Get time series data for revenue, expenses, and profit"""
-    # Get daily sales data
-    sales_data = db.query(
-        InvReport.created_at,
-        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('revenue'),
-        func.sum(InvReportItem.offtake * InvReportItem.current_cost).label('cost')
-    ).join(
-        InvReportItem
-    ).filter(
-        InvReport.created_at.between(start_date, end_date)
-    ).group_by(
-        InvReport.created_at
-    ).all()
-
-    # Get daily expense data
     expense_data = db.query(
-        Expense.date_created,
-        func.sum(Expense.amount).label('amount')
+        func.date_trunc('day', Expense.date_created).label('date'),
+        func.sum(Expense.amount).label('value')
     ).filter(
-        Expense.date_created.between(start_date, end_date)
-    ).group_by(
-        Expense.date_created
-    ).all()
+        Expense.date_created >= start_date,
+        Expense.date_created <= end_date
+    ).group_by('date').order_by('date').all()
+
+    # Calculate daily profit
+    profit_trend = []
+    for date in (start_date + timedelta(n) for n in range((end_date - start_date).days + 1)):
+        daily_revenue = next((r.value for r in revenue_data if r.date.date() == date.date()), 0)
+        daily_expense = next((e.value for e in expense_data if e.date.date() == date.date()), 0)
+        profit_trend.append({
+            "timestamp": date,
+            "value": daily_revenue - daily_expense
+        })
 
     return {
-        "revenue": [{"timestamp": s.created_at.isoformat(), "value": float(s.revenue)} for s in sales_data],
-        "expenses": [{"timestamp": e.date_created.isoformat(), "value": float(e.amount)} for e in expense_data],
-        "profit": [{"timestamp": s.created_at.isoformat(), "value": float(s.revenue - s.cost)} for s in sales_data]
+        "revenue": [{"timestamp": r.date, "value": r.value} for r in revenue_data],
+        "expenses": [{"timestamp": e.date, "value": e.value} for e in expense_data],
+        "profit": profit_trend
     }
 
-def calculate_profit_margin(product: dict) -> float:
+def calculate_profit_margin(product_data) -> float:
     """Calculate profit margin for a product"""
-    if product["revenue"] == 0:
+    if not hasattr(product_data, 'total_revenue') or product_data.total_revenue == 0:
         return 0
-    return ((product["revenue"] - product["total_cost"]) / product["revenue"]) * 100
+    cost = getattr(product_data, 'total_cost', 0)
+    return ((product_data.total_revenue - cost) / product_data.total_revenue) * 100
 
 @router.get("/inventory")
 async def get_inventory_analytics(
@@ -521,12 +502,18 @@ async def get_product_analytics(
     product_id: int,
     db: db_dependency,
     user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
+    time_range: str = "30d"
 ):
+    # Get product details
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
     # Get branch stocks with active quantities
     branch_products = (
         db.query(
             BranchProduct.branch_id,
-            Branch.name.label("branch_name"),
+            Branch.branch_name.label("branch_name"),
             Branch.branch_type.label("branch_type"),
             BranchProduct.is_available,
             Product.wholesale_low_stock_threshold,
@@ -541,12 +528,16 @@ async def get_product_analytics(
                 0
             ).label("active_quantity")
         )
-        .join(Branch)
-        .join(Product)
-        .outerjoin(ProductBatch)
+        .select_from(BranchProduct)
+        .join(Branch, Branch.id == BranchProduct.branch_id)
+        .join(Product, Product.id == BranchProduct.product_id)
+        .outerjoin(ProductBatch, sa.and_(
+            ProductBatch.product_id == BranchProduct.product_id,
+            ProductBatch.branch_id == BranchProduct.branch_id
+        ))
         .filter(
             BranchProduct.product_id == product_id,
-            BranchProduct.is_available == True,  # Only include available branch products
+            BranchProduct.is_available == True,
             sa.case(
                 (Branch.branch_type == 'wholesale', Product.is_wholesale_available),
                 else_=Product.is_retail_available
@@ -554,7 +545,7 @@ async def get_product_analytics(
         )
         .group_by(
             BranchProduct.branch_id,
-            Branch.name,
+            Branch.branch_name,
             Branch.branch_type,
             BranchProduct.is_available,
             Product.wholesale_low_stock_threshold,
@@ -565,11 +556,15 @@ async def get_product_analytics(
 
     # Calculate analytics
     stock_analytics = StockAnalytics(
-        total_stock=sum(bp.active_quantity for bp in branch_products if bp.is_available),
-        branch_count=len([bp for bp in branch_products if bp.is_available]),
+        total_stock=sum(bp.active_quantity for bp in branch_products),
+        branch_count=len(branch_products),
         low_stock_branches=len([
             bp for bp in branch_products
-            if bp.is_available and bp.is_low_stock
+            if bp.active_quantity <= (
+                bp.wholesale_low_stock_threshold 
+                if bp.branch_type == 'wholesale' 
+                else bp.retail_low_stock_threshold
+            )
         ]),
         branch_stocks=[
             BranchStock(
@@ -577,13 +572,110 @@ async def get_product_analytics(
                 name=bp.branch_name,
                 stock=bp.active_quantity,
                 is_available=bp.is_available,
-                branch_type=bp.branch_type
+                branch_type=bp.branch_type,
+                is_low_stock=bp.active_quantity <= (
+                    bp.wholesale_low_stock_threshold 
+                    if bp.branch_type == 'wholesale' 
+                    else bp.retail_low_stock_threshold
+                )
             ) for bp in branch_products
-            if bp.is_available
         ]
     )
 
-    return ProductAnalytics(stock_analytics=stock_analytics)
+    # Get start date based on time range
+    end_date = datetime.now()
+    start_date = get_start_date(time_range)
+
+    # Get sales data for margin calculation
+    sales_data = (
+        db.query(
+            func.sum(InvReportItem.offtake).label('total_quantity'),
+            func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('total_revenue'),
+            func.sum(InvReportItem.offtake * InvReportItem.current_cost).label('total_cost')
+        )
+        .join(InvReport)
+        .filter(
+            InvReportItem.product_id == product_id,
+            InvReport.created_at >= start_date,
+            InvReport.created_at <= end_date
+        )
+        .first()
+    )
+
+    # Get price history
+    price_history = (
+        db.query(PriceHistory)
+        .filter(
+            PriceHistory.product_id == product_id,
+            PriceHistory.date >= start_date,
+            PriceHistory.date <= end_date
+        )
+        .order_by(PriceHistory.date.asc())
+        .all()
+    )
+
+    # Calculate average margin from sales data
+    total_revenue = sales_data.total_revenue if sales_data.total_revenue else 0
+    total_cost = sales_data.total_cost if sales_data.total_cost else 0
+    avg_margin = ((total_revenue - total_cost) / total_revenue * 100) if total_revenue > 0 else 0
+
+    # Get branch-specific sales data
+    branch_sales = (
+        db.query(
+            InvReport.branch_id,
+            Branch.branch_name,
+            Branch.branch_type,
+            func.sum(InvReportItem.offtake).label('total_quantity')
+        )
+        .select_from(InvReportItem)
+        .join(InvReport, InvReport.id == InvReportItem.invreport_id)
+        .join(Branch, Branch.id == InvReport.branch_id)
+        .filter(
+            InvReportItem.product_id == product_id,
+            InvReport.created_at >= start_date,
+            InvReport.created_at <= end_date
+        )
+        .group_by(
+            InvReport.branch_id,
+            Branch.branch_name,
+            Branch.branch_type
+        )
+        .all()
+    )
+
+    # Create branch performance data
+    branch_performance = [
+        {
+            "branch_id": sale.branch_id,
+            "branch_name": sale.branch_name,
+            "branch_type": sale.branch_type,
+            "quantity": int(sale.total_quantity)
+        }
+        for sale in branch_sales
+    ]
+
+    return ProductAnalytics(
+        stock_analytics=stock_analytics,
+        total_sales={
+            "quantity": int(sales_data.total_quantity or 0),
+            "revenue": float(total_revenue)
+        },
+        current_price={
+            "cost": float(product.cost),
+            "srp": float(product.srp)
+        },
+        price_history=[{
+            "date": ph.date,
+            "cost": float(ph.cost),
+            "srp": float(ph.srp),
+            "margin": ((ph.srp - ph.cost) / ph.srp * 100) if ph.srp > 0 else 0
+        } for ph in price_history],
+        branch_performance=branch_performance,
+        price_analytics={
+            "avg_margin": float(avg_margin),
+            "change_count": len(price_history)
+        }
+    )
 
 def get_start_date(time_range: str) -> datetime:
     end_date = datetime.now()
@@ -595,149 +687,4 @@ def get_start_date(time_range: str) -> datetime:
         return end_date - timedelta(days=90)
     else:  # 1y
         return end_date - timedelta(days=365)
-
-@router.get("/overview")
-async def get_analytics_overview(
-    time_range: str,
-    db: db_dependency,
-    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
-):
-    end_date = datetime.now()
-    start_date = get_start_date(time_range)
-
-    # Get sales data from inventory reports
-    sales_data = db.query(
-        InvReport.created_at,
-        InvReportItem.offtake,
-        InvReportItem.current_srp,
-        InvReportItem.current_cost,
-        Product.name.label('product_name'),
-        Product.id.label('product_id'),
-        Branch.id.label('branch_id'),
-        Branch.name.label('branch_name')
-    ).join(
-        Product,
-        Product.id == InvReportItem.product_id
-    ).join(
-        InvReport,
-        InvReport.id == InvReportItem.invreport_id
-    ).join(
-        Branch,
-        Branch.id == InvReport.branch_id
-    ).filter(
-        InvReport.created_at >= start_date,
-        InvReport.created_at <= end_date
-    ).all()
-
-    # Get expense data
-    expense_data = db.query(
-        Expense.date_created,
-        Expense.amount,
-        Expense.type,
-        Expense.name,
-        Branch.name.label('branch_name')
-    ).join(
-        Branch,
-        Branch.id == Expense.branch_id
-    ).filter(
-        Expense.date_created >= start_date,
-        Expense.date_created <= end_date
-    ).all()
-
-    # Calculate metrics
-    total_revenue = sum(sale.offtake * sale.current_srp for sale in sales_data)
-    total_expenses = sum(expense.amount for expense in expense_data)
-    total_cost = sum(sale.offtake * sale.current_cost for sale in sales_data)
-    gross_profit = total_revenue - total_cost
-    net_profit = gross_profit - total_expenses
-    profit_margin = calculate_profit_margin_percentage(gross_profit, total_revenue)
-
-    # Get time series data
-    time_series = get_time_series_data(db, start_date, end_date)
-
-    # Calculate branch performance
-    branch_performance = {}
-    for sale in sales_data:
-        if sale.branch_id not in branch_performance:
-            branch_performance[sale.branch_id] = {
-                "branch_id": sale.branch_id,
-                "branch_name": sale.branch_name,
-                "total_sales": 0,
-                "revenue": 0,
-                "total_expenses": 0,
-                "profit": 0
-            }
-        branch_performance[sale.branch_id]["total_sales"] += sale.offtake
-        branch_performance[sale.branch_id]["revenue"] += sale.offtake * sale.current_srp
-        branch_performance[sale.branch_id]["profit"] += (sale.offtake * sale.current_srp) - (sale.offtake * sale.current_cost)
-
-    # Get top products
-    product_performance = {}
-    for sale in sales_data:
-        if sale.product_id not in product_performance:
-            product_performance[sale.product_id] = {
-                "id": sale.product_id,
-                "name": sale.product_name,
-                "total_sales": 0,
-                "revenue": 0,
-                "total_cost": 0
-            }
-        product_performance[sale.product_id]["total_sales"] += sale.offtake
-        product_performance[sale.product_id]["revenue"] += sale.offtake * sale.current_srp
-        product_performance[sale.product_id]["total_cost"] += sale.offtake * sale.current_cost
-        product_performance[sale.product_id]["profit_margin"] = calculate_profit_margin_percentage(
-            product_performance[sale.product_id]["revenue"] - product_performance[sale.product_id]["total_cost"],
-            product_performance[sale.product_id]["revenue"]
-        )
-
-    # Get inventory status
-    inventory_status = db.query(
-        func.count(distinct(Product.id)).label('total_products'),
-        func.count(distinct(case([(BranchProduct.is_low_stock == True, Product.id)], else_=None))).label('low_stock_count'),
-        func.count(distinct(case([(ProductBatch.quantity == 0, Product.id)], else_=None))).label('out_of_stock_count'),
-        func.count(distinct(case([(ProductBatch.expiration_date <= end_date + timedelta(days=30), Product.id)], else_=None))).label('near_expiry_count')
-    ).select_from(Product).join(
-        BranchProduct
-    ).join(
-        ProductBatch,
-        sa.and_(
-            ProductBatch.product_id == Product.id,
-            ProductBatch.branch_id == BranchProduct.branch_id,
-            ProductBatch.is_active == True
-        )
-    )
-
-    return {
-        "total_revenue": total_revenue,
-        "total_sales": sum(sale.offtake for sale in sales_data),
-        "total_expenses": total_expenses,
-        "gross_profit": gross_profit,
-        "net_profit": net_profit,
-        "profit_margin": profit_margin,
-        "branch_performance": sorted(
-            branch_performance.values(),
-            key=lambda x: x["revenue"],
-            reverse=True
-        ),
-        "top_products": sorted(
-            [
-                {
-                    **product,
-                    "profit_margin": calculate_profit_margin(product)
-                }
-                for product in product_performance.values()
-            ],
-            key=lambda x: x["revenue"],
-            reverse=True
-        ),
-        "revenue_trend": time_series["revenue"],
-        "expense_trend": time_series["expenses"],
-        "profit_trend": time_series["profit"],
-        "inventory": {
-            "total_products": inventory_status.total_products or 0,
-            "low_stock_count": inventory_status.low_stock_count or 0,
-            "out_of_stock_count": inventory_status.out_of_stock_count or 0,
-            "near_expiry_count": inventory_status.near_expiry_count or 0
-        }
-    }
 
