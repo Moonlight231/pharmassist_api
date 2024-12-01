@@ -63,6 +63,8 @@ class BranchStock(BaseModel):
     is_available: bool
     branch_type: str
     is_low_stock: bool
+    low_stock_since: Optional[datetime] = None
+    days_in_low_stock: int = 0
 
 class StockAnalytics(BaseModel):
     total_stock: int
@@ -368,17 +370,15 @@ def get_low_stock_items(db: db_dependency, branch_id: Optional[int] = None):
         )
         .join(Product)
         .join(Branch)
-        .outerjoin(ProductBatch, sa.and_(
-            ProductBatch.product_id == BranchProduct.product_id,
-            ProductBatch.branch_id == BranchProduct.branch_id
-        ))
+        .outerjoin(ProductBatch)
         .filter(BranchProduct.is_available == True)
         .group_by(
             BranchProduct.product_id,
             BranchProduct.branch_id,
             Product.id,
             Branch.id,
-            BranchProduct.is_available
+            BranchProduct.is_available,
+            BranchProduct.low_stock_since
         )
     )
     
@@ -395,7 +395,9 @@ def get_low_stock_items(db: db_dependency, branch_id: Optional[int] = None):
                 "product_id": bp.product_id,
                 "product_name": product.name,
                 "current_stock": active_quantity,
-                "threshold": threshold
+                "threshold": threshold,
+                "low_stock_since": bp.low_stock_since,
+                "days_in_low_stock": bp.days_in_low_stock
             })
     return low_stock_items
 
@@ -516,6 +518,7 @@ async def get_product_analytics(
             Branch.branch_name.label("branch_name"),
             Branch.branch_type.label("branch_type"),
             BranchProduct.is_available,
+            BranchProduct.low_stock_since,
             Product.wholesale_low_stock_threshold,
             Product.retail_low_stock_threshold,
             sa.func.coalesce(
@@ -548,6 +551,7 @@ async def get_product_analytics(
             Branch.branch_name,
             Branch.branch_type,
             BranchProduct.is_available,
+            BranchProduct.low_stock_since,
             Product.wholesale_low_stock_threshold,
             Product.retail_low_stock_threshold
         )
@@ -577,7 +581,9 @@ async def get_product_analytics(
                     bp.wholesale_low_stock_threshold 
                     if bp.branch_type == 'wholesale' 
                     else bp.retail_low_stock_threshold
-                )
+                ),
+                low_stock_since=bp.low_stock_since,
+                days_in_low_stock=(datetime.now() - bp.low_stock_since).days if bp.low_stock_since else 0
             ) for bp in branch_products
         ]
     )

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Annotated
 from pydantic import BaseModel, Field, ConfigDict
-from datetime import date
+from datetime import date, datetime
 
 from api.models import BranchProduct, Branch, Product, UserRole, BranchType
 from api.deps import db_dependency, role_required
@@ -39,6 +39,8 @@ class BranchProductResponse(BranchProductBase):
     retail_low_stock_threshold: int
     wholesale_low_stock_threshold: int
     product_name: str
+    days_in_low_stock: int
+    low_stock_since: Optional[datetime]
 
     model_config = ConfigDict(
         from_attributes=True
@@ -183,7 +185,9 @@ def get_branch_products(
                 "is_wholesale_available": product.is_wholesale_available,
                 "retail_low_stock_threshold": product.retail_low_stock_threshold,
                 "wholesale_low_stock_threshold": product.wholesale_low_stock_threshold,
-                "product_name": product.name
+                "product_name": product.name,
+                "days_in_low_stock": bp.days_in_low_stock,
+                "low_stock_since": bp.low_stock_since
             }
             response.append(response_item)
     
@@ -330,9 +334,11 @@ def get_low_stock_products(
             ),
             "branch_id": branch.id,
             "branch_name": branch.branch_name,
-            "is_available": branch_product.is_available
+            "is_available": branch_product.is_available,
+            "low_stock_since": low_stock_since,
+            "days_in_low_stock": days_in_low_stock
         }
-        for product, branch, branch_product, quantity in results
+        for product, branch, branch_product, quantity, low_stock_since, days_in_low_stock in results
     ]
 
 @router.get('/low-stock-summary/{branch_id}', response_model=LowStockSummary)
@@ -401,7 +407,8 @@ def get_low_stock_summary(
                 "is_wholesale_available": product.is_wholesale_available,
                 "retail_low_stock_threshold": product.retail_low_stock_threshold,
                 "wholesale_low_stock_threshold": product.wholesale_low_stock_threshold,
-                "product_name": product.name
+                "product_name": product.name,
+                "days_in_low_stock": bp.days_in_low_stock
             }
             low_stock_products.append(response_item)
     

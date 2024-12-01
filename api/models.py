@@ -1,11 +1,12 @@
 from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Table, Float, Date, select, DateTime, ARRAY
 from sqlalchemy.orm import relationship, column_property
 from .database import Base, engine
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from enum import Enum
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional
+from sqlalchemy.orm import object_session
 
 
 class UserRole(str, Enum):
@@ -67,6 +68,7 @@ class BranchProduct(Base):
     branch_id = Column(Integer, ForeignKey('branches.id'), primary_key=True)
     quantity = Column(Integer)
     is_available = Column(Boolean, default=False)
+    low_stock_since = Column(DateTime, nullable=True)
     
     product = relationship("Product", back_populates="branch_products")
     branch = relationship("Branch", back_populates="branch_products")
@@ -101,12 +103,37 @@ class BranchProduct(Base):
     def is_low_stock(self):
         if not self.product or not self.is_available:
             return False
+        
         threshold = (
             self.product.wholesale_low_stock_threshold 
             if self.branch.branch_type == BranchType.WHOLESALE 
             else self.product.retail_low_stock_threshold
         )
-        return self.active_quantity <= threshold
+        is_low = self.active_quantity <= threshold
+        
+        # Get the session
+        session = object_session(self)
+        if session is not None:
+            # Update low_stock_since when status changes
+            if is_low and not self.low_stock_since:
+                self.low_stock_since = datetime.now()
+                session.add(self)
+                session.commit()
+            elif not is_low and self.low_stock_since:
+                self.low_stock_since = None
+                session.add(self)
+                session.commit()
+            
+        return is_low
+
+    @property
+    def days_in_low_stock(self):
+        if not self.low_stock_since:
+            return 0
+        # Use local time for both
+        now = datetime.now()
+        delta = now - self.low_stock_since
+        return max(0, delta.days)  # Ensure we don't return negative days
 
 class InvReport(Base):
     __tablename__ = "invreports"

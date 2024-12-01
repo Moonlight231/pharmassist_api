@@ -271,11 +271,13 @@ def update_branch_product_quantity(db: Session, branch_id: int, product_id: int)
     if (branch_product.branch.branch_type == 'wholesale' and 
         not branch_product.product.is_wholesale_available):
         branch_product.is_available = False
+        branch_product.low_stock_since = None
         db.commit()
         return
     elif (branch_product.branch.branch_type == 'retail' and 
           not branch_product.product.is_retail_available):
         branch_product.is_available = False
+        branch_product.low_stock_since = None
         db.commit()
         return
 
@@ -288,6 +290,20 @@ def update_branch_product_quantity(db: Session, branch_id: int, product_id: int)
     
     old_quantity = branch_product.quantity
     branch_product.quantity = total_quantity
+    
+    # Check for low stock status
+    threshold = (
+        branch_product.product.wholesale_low_stock_threshold 
+        if branch_product.branch.branch_type == 'wholesale'
+        else branch_product.product.retail_low_stock_threshold
+    )
+    
+    # Update low stock status
+    if total_quantity <= threshold and branch_product.is_available:
+        if not branch_product.low_stock_since:
+            branch_product.low_stock_since = datetime.now()
+    elif total_quantity > threshold:
+        branch_product.low_stock_since = None
     
     # If quantity is changing from 0 to a positive number, make the product available
     if old_quantity == 0 and total_quantity > 0:
