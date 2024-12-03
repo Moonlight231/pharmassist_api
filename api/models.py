@@ -141,9 +141,9 @@ class InvReport(Base):
     id = Column(Integer, primary_key=True, index=True)
     branch_id = Column(Integer, ForeignKey('branches.id'))
     created_at = Column(DateTime, default=datetime.now)
-    start_date = Column(Date)
-    end_date = Column(Date)
-    viewed_by = Column(Integer, nullable=True)  # Single admin user ID who viewed the report
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+    viewed_by = Column(Integer, nullable=True)
     items = relationship("InvReportItem", back_populates="invreport")
     branch = relationship("Branch", back_populates="invreports")
 

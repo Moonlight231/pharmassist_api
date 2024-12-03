@@ -74,8 +74,8 @@ class InvReportItemBase(BaseModel):
 
 class InvReportCreate(BaseModel):
     branch_id: int
-    start_date: date
-    end_date: date
+    start_date: datetime
+    end_date: datetime
     items: List[InvReportItemBase]
 
 class ProductResponse(BaseModel):
@@ -133,8 +133,8 @@ class InvReportResponse(BaseModel):
     id: int
     branch_id: int
     created_at: datetime
-    start_date: date
-    end_date: date
+    start_date: datetime
+    end_date: datetime
     items: List[InvReportItemResponse]
     branch: Optional[BranchResponse]
     viewed_by: Optional[int] = None
