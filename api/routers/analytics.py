@@ -504,14 +504,15 @@ async def get_product_analytics(
     product_id: int,
     db: db_dependency,
     user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
-    time_range: str = "30d"
+    time_range: str = "30d",
+    branch_type: str = "retail"
 ):
     # Get product details
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Get branch stocks with active quantities
+    # Modify branch products query to filter by type
     branch_products = (
         db.query(
             BranchProduct.branch_id,
@@ -524,7 +525,13 @@ async def get_product_analytics(
             sa.func.coalesce(
                 sa.func.sum(
                     sa.case(
-                        (ProductBatch.is_active == True, ProductBatch.quantity),
+                        (
+                            sa.and_(
+                                ProductBatch.is_active == True,
+                                ProductBatch.branch_id == BranchProduct.branch_id
+                            ),
+                            ProductBatch.quantity
+                        ),
                         else_=0
                     )
                 ),
@@ -534,13 +541,11 @@ async def get_product_analytics(
         .select_from(BranchProduct)
         .join(Branch, Branch.id == BranchProduct.branch_id)
         .join(Product, Product.id == BranchProduct.product_id)
-        .outerjoin(ProductBatch, sa.and_(
-            ProductBatch.product_id == BranchProduct.product_id,
-            ProductBatch.branch_id == BranchProduct.branch_id
-        ))
+        .outerjoin(ProductBatch)
         .filter(
             BranchProduct.product_id == product_id,
             BranchProduct.is_available == True,
+            Branch.branch_type == branch_type,
             sa.case(
                 (Branch.branch_type == 'wholesale', Product.is_wholesale_available),
                 else_=Product.is_retail_available
@@ -556,6 +561,24 @@ async def get_product_analytics(
             Product.retail_low_stock_threshold
         )
         .all()
+    )
+
+    # Modify sales data query to filter by branch type
+    sales_data = (
+        db.query(
+            func.sum(InvReportItem.offtake).label('total_quantity'),
+            func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('total_revenue'),
+            func.sum(InvReportItem.offtake * InvReportItem.current_cost).label('total_cost')
+        )
+        .join(InvReport)
+        .join(Branch)
+        .filter(
+            InvReportItem.product_id == product_id,
+            InvReport.created_at >= get_start_date(time_range),
+            InvReport.created_at <= datetime.now(),
+            Branch.branch_type == branch_type
+        )
+        .first()
     )
 
     # Calculate analytics
@@ -591,22 +614,6 @@ async def get_product_analytics(
     # Get start date based on time range
     end_date = datetime.now()
     start_date = get_start_date(time_range)
-
-    # Get sales data for margin calculation
-    sales_data = (
-        db.query(
-            func.sum(InvReportItem.offtake).label('total_quantity'),
-            func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('total_revenue'),
-            func.sum(InvReportItem.offtake * InvReportItem.current_cost).label('total_cost')
-        )
-        .join(InvReport)
-        .filter(
-            InvReportItem.product_id == product_id,
-            InvReport.created_at >= start_date,
-            InvReport.created_at <= end_date
-        )
-        .first()
-    )
 
     # Get price history
     price_history = (
