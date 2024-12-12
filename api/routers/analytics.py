@@ -934,3 +934,88 @@ async def get_company_overview(
         }
     }
 
+@router.get("/monthly-comparison")
+async def get_monthly_comparison(
+    db: db_dependency,
+    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
+    branch_type: str = "retail",
+    branch_id: Optional[int] = None
+):
+    # Get current and previous month dates
+    today = datetime.now()
+    current_month_start = datetime(today.year, today.month, 1)
+    previous_month_start = (current_month_start - timedelta(days=1)).replace(day=1)
+    two_months_ago_start = (previous_month_start - timedelta(days=1)).replace(day=1)
+    
+    # Build branch filter
+    if branch_id and current_user["role"] == UserRole.PHARMACIST or current_user["role"] == UserRole.WHOLESALER:
+        if branch_id != current_user["branch_id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to view this branch's data")
+        branch_ids = [branch_id]
+    elif branch_id:
+        branch_ids = [branch_id]
+    else:
+        # Get branches of specified type
+        branches = db.query(Branch).filter(
+            Branch.is_active == True,
+            Branch.branch_type == branch_type
+        ).all()
+        branch_ids = [b.id for b in branches]
+
+    # Get previous month revenue
+    prev_month_revenue = db.query(
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp)
+    ).join(
+        InvReport,
+        InvReport.id == InvReportItem.invreport_id
+    ).filter(
+        InvReport.branch_id.in_(branch_ids),
+        InvReport.created_at >= previous_month_start,
+        InvReport.created_at < current_month_start
+    ).scalar() or 0
+
+    # Get two months ago revenue
+    two_months_ago_revenue = db.query(
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp)
+    ).join(
+        InvReport,
+        InvReport.id == InvReportItem.invreport_id
+    ).filter(
+        InvReport.branch_id.in_(branch_ids),
+        InvReport.created_at >= two_months_ago_start,
+        InvReport.created_at < previous_month_start
+    ).scalar() or 0
+
+    # Get previous month expenses
+    prev_month_expenses = db.query(
+        func.sum(Expense.amount)
+    ).filter(
+        Expense.branch_id.in_(branch_ids),
+        Expense.date_created >= previous_month_start,
+        Expense.date_created < current_month_start
+    ).scalar() or 0
+
+    # Get two months ago expenses
+    two_months_ago_expenses = db.query(
+        func.sum(Expense.amount)
+    ).filter(
+        Expense.branch_id.in_(branch_ids),
+        Expense.date_created >= two_months_ago_start,
+        Expense.date_created < previous_month_start
+    ).scalar() or 0
+
+    # Calculate percentage changes
+    revenue_change = ((prev_month_revenue - two_months_ago_revenue) / two_months_ago_revenue * 100) if two_months_ago_revenue > 0 else 0
+    expense_change = ((prev_month_expenses - two_months_ago_expenses) / two_months_ago_expenses * 100) if two_months_ago_expenses > 0 else 0
+
+    return {
+        "previous_month": {
+            "revenue": float(prev_month_revenue),
+            "revenue_change": float(revenue_change),
+            "expenses": float(prev_month_expenses),
+            "expense_change": float(expense_change)
+        },
+        "month": previous_month_start.strftime("%B %Y"),
+        "branch_id": branch_id
+    }
+
