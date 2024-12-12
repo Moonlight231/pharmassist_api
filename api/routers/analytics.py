@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, desc, and_
+from sqlalchemy import func, desc, and_, case, distinct, select
 from datetime import datetime, timedelta, date
 from typing import List, Optional, Annotated
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 import sqlalchemy as sa
+from sqlalchemy.sql import exists
 
 from api.deps import db_dependency, role_required
 from api.models import (
@@ -723,4 +724,213 @@ def get_start_date(time_range: str) -> datetime:
         return end_date - timedelta(days=90)
     else:  # 1y
         return end_date - timedelta(days=365)
+
+@router.get("/overview")
+async def get_company_overview(
+    db: db_dependency,
+    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN]))],
+    time_range: str = "30d",
+    branch_type: str = "retail"
+):
+    end_date = datetime.now()
+    start_date = get_start_date(time_range)
+    
+    # Get branches of specified type
+    branches = db.query(Branch).filter(
+        Branch.is_active == True,
+        Branch.branch_type == branch_type
+    ).all()
+    branch_ids = [b.id for b in branches]
+
+    # Calculate overall metrics (existing code)
+    sales_data = db.query(
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('total_revenue'),
+        func.sum(InvReportItem.offtake).label('total_sales'),
+        func.sum(InvReportItem.offtake * (InvReportItem.current_srp - InvReportItem.current_cost)).label('gross_profit')
+    ).join(
+        InvReport,
+        InvReport.id == InvReportItem.invreport_id
+    ).filter(
+        InvReport.branch_id.in_(branch_ids),
+        InvReport.created_at.between(start_date, end_date)
+    ).first()
+    
+    # Get branch performance
+    branch_performance = db.query(
+        Branch.id.label('branch_id'),
+        Branch.branch_name,
+        func.sum(InvReportItem.offtake).label('total_sales'),
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('revenue'),
+        func.sum(Expense.amount).label('total_expenses')
+    ).join(
+        InvReport, InvReport.branch_id == Branch.id
+    ).join(
+        InvReportItem, InvReportItem.invreport_id == InvReport.id
+    ).outerjoin(
+        Expense, and_(
+            Expense.branch_id == Branch.id,
+            Expense.date_created.between(start_date, end_date)
+        )
+    ).filter(
+        Branch.id.in_(branch_ids),
+        InvReport.created_at.between(start_date, end_date)
+    ).group_by(
+        Branch.id,
+        Branch.branch_name
+    ).all()
+
+    # Get top products
+    top_products = db.query(
+        Product.id,
+        Product.name,
+        func.sum(InvReportItem.offtake).label('total_sales'),
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('revenue'),
+        func.sum(InvReportItem.offtake * (InvReportItem.current_srp - InvReportItem.current_cost)).label('profit')
+    ).join(
+        InvReportItem, InvReportItem.product_id == Product.id
+    ).join(
+        InvReport, and_(
+            InvReport.id == InvReportItem.invreport_id,
+            InvReport.branch_id.in_(branch_ids),
+            InvReport.created_at.between(start_date, end_date)
+        )
+    ).group_by(
+        Product.id,
+        Product.name
+    ).order_by(
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp).desc()
+    ).limit(5).all()
+
+    # Rest of the existing code
+    total_revenue = float(sales_data.total_revenue or 0)
+    gross_profit = float(sales_data.gross_profit or 0)
+    total_expenses = db.query(func.sum(Expense.amount)).filter(
+        Expense.branch_id.in_(branch_ids),
+        Expense.date_created.between(start_date, end_date)
+    ).scalar() or 0
+    net_profit = gross_profit - total_expenses
+    profit_margin = (net_profit / total_revenue * 100) if total_revenue > 0 else 0
+
+    # Calculate revenue trend
+    revenue_trend = db.query(
+        AnalyticsTimeSeries.timestamp,
+        func.sum(AnalyticsTimeSeries.value).label('value'),
+        func.sum(AnalyticsTimeSeries.value).label('gross_value'),
+        func.coalesce(func.sum(Expense.amount), 0).label('expenses')
+    ).outerjoin(
+        Expense,
+        and_(
+            func.date(Expense.date_created) == func.date(AnalyticsTimeSeries.timestamp),
+            Expense.branch_id.in_(branch_ids)
+        )
+    ).filter(
+        AnalyticsTimeSeries.branch_id.in_(branch_ids),
+        AnalyticsTimeSeries.timestamp.between(start_date, end_date)
+    ).group_by(
+        AnalyticsTimeSeries.timestamp
+    ).order_by(
+        AnalyticsTimeSeries.timestamp
+    ).all()
+
+    # First, get the total quantity per branch and product
+    product_quantities = db.query(
+        Branch.id.label('branch_id'),
+        Branch.branch_type,
+        Product.id.label('product_id'),
+        Product.wholesale_low_stock_threshold,
+        Product.retail_low_stock_threshold,
+        func.sum(case((ProductBatch.is_active == True, ProductBatch.quantity), else_=0)).label('total_quantity')
+    ).join(
+        BranchProduct, BranchProduct.branch_id == Branch.id
+    ).join(
+        Product, Product.id == BranchProduct.product_id
+    ).outerjoin(
+        ProductBatch, and_(
+            ProductBatch.product_id == Product.id,
+            ProductBatch.branch_id == Branch.id
+        )
+    ).filter(
+        Branch.id.in_(branch_ids)
+    ).group_by(
+        Branch.id,
+        Branch.branch_type,
+        Product.id,
+        Product.wholesale_low_stock_threshold,
+        Product.retail_low_stock_threshold
+    ).subquery()
+
+    # Then use this subquery for the branch-level counts
+    inventory_stats = db.query(
+        func.count(distinct(Branch.id)).label('total_branches'),
+        func.count(distinct(case(
+            (exists(
+                select(1).select_from(product_quantities)
+                .join(BranchProduct, and_(
+                    BranchProduct.branch_id == product_quantities.c.branch_id,
+                    BranchProduct.product_id == product_quantities.c.product_id,
+                    BranchProduct.is_available == True
+                ))
+                .correlate(Branch)
+                .where(and_(
+                    product_quantities.c.branch_id == Branch.id,
+                    product_quantities.c.total_quantity <= 
+                    case(
+                        (product_quantities.c.branch_type == 'wholesale', 
+                         product_quantities.c.wholesale_low_stock_threshold),
+                        else_=product_quantities.c.retail_low_stock_threshold
+                    )
+                ))
+            ), Branch.id)
+        ))).label('low_stock_branches'),
+        func.count(distinct(case(
+            (exists(
+                select(1).select_from(ProductBatch)
+                .correlate(Branch)
+                .where(and_(
+                    ProductBatch.branch_id == Branch.id,
+                    ProductBatch.expiration_date <= datetime.now() + timedelta(days=30),
+                    ProductBatch.is_active == True,
+                    ProductBatch.quantity > 0
+                ))
+            ), Branch.id)
+        ))).label('near_expiry_branches')
+    ).select_from(Branch).filter(
+        Branch.id.in_(branch_ids)
+    ).first()
+
+    return {
+        "total_revenue": total_revenue,
+        "total_sales": int(sales_data.total_sales or 0),
+        "total_expenses": float(total_expenses),
+        "gross_profit": gross_profit,
+        "net_profit": net_profit,
+        "profit_margin": profit_margin,
+        "active_branches": len(branches),
+        "branch_performance": [{
+            "branch_id": bp.branch_id,
+            "branch_name": bp.branch_name,
+            "total_sales": int(bp.total_sales or 0),
+            "revenue": float(bp.revenue or 0),
+            "total_expenses": float(bp.total_expenses or 0),
+            "profit": float((bp.revenue or 0) - (bp.total_expenses or 0))
+        } for bp in branch_performance],
+        "top_products": [{
+            "id": p.id,
+            "name": p.name,
+            "total_sales": int(p.total_sales or 0),
+            "revenue": float(p.revenue or 0),
+            "profit_margin": float(p.profit / p.revenue * 100) if p.revenue else 0
+        } for p in top_products],
+        "revenue_trend": [{
+            "timestamp": entry.timestamp.isoformat(),
+            "value": float(entry.value),
+            "profit": float(entry.gross_value - entry.expenses),
+            "expenses": float(entry.expenses)
+        } for entry in revenue_trend],
+        "inventory": {
+            "total_branches": int(inventory_stats.total_branches or 0),
+            "low_stock_branches": int(inventory_stats.low_stock_branches or 0),
+            "near_expiry_branches": int(inventory_stats.near_expiry_branches or 0)
+        }
+    }
 
