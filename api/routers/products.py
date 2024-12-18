@@ -1,6 +1,9 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Annotated, List
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File
+import shutil
+import os
+from uuid import uuid4
 
 from api.models import Product, UserRole, Branch, BranchProduct, PriceHistory
 from api.deps import db_dependency, user_dependency, role_required
@@ -10,16 +13,26 @@ router = APIRouter(
     tags=['products']
 )
 
+UPLOAD_DIR = "static/product_images"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
+
 class ProductBase(BaseModel):
     name: str
     cost: float
     srp: float
     retail_low_stock_threshold: int = Field(gt=0, default=50)
     wholesale_low_stock_threshold: int = Field(gt=0, default=50)
-
-class AddProduct(ProductBase):
     is_retail_available: bool = True
     is_wholesale_available: bool = False
+    image_url: Optional[str] = None
+
+    model_config = {
+        "from_attributes": True
+    }
+
+class AddProduct(ProductBase):
+    pass
 
 class UpdateProduct(BaseModel):
     name: Optional[str] = None
@@ -29,6 +42,11 @@ class UpdateProduct(BaseModel):
     wholesale_low_stock_threshold: Optional[int] = Field(gt=0, default=None)
     is_retail_available: Optional[bool] = None
     is_wholesale_available: Optional[bool] = None
+    image_url: Optional[str] = None
+
+    model_config = {
+        "from_attributes": True
+    }
 
 class ProductResponse(ProductBase):
     id: int
@@ -157,4 +175,36 @@ def delete_product(
         raise HTTPException(
             status_code=500,
             detail=f"Error deleting product: {str(e)}"
+        )
+
+@router.post("/upload-image")
+async def upload_product_image(
+    user: Annotated[dict, Depends(role_required(UserRole.ADMIN))],
+    file: UploadFile = File(...)
+    
+):
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(
+            status_code=400,
+            detail="File must be an image"
+        )
+    
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ['.jpg', '.jpeg', '.png', '.gif']:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type"
+        )
+    
+    unique_filename = f"{uuid4()}{file_ext}"
+    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        return {"image_url": f"/product_images/{unique_filename}"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
         )

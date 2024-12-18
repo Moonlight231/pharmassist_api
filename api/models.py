@@ -49,17 +49,21 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String)
-    cost = Column(Float)
-    srp = Column(Float)
-    retail_low_stock_threshold = Column(Integer, default=50)
-    wholesale_low_stock_threshold = Column(Integer, default=50)
-    is_retail_available = Column(Boolean, default=True)
-    is_wholesale_available = Column(Boolean, default=False)
+    name = Column(String, nullable=False)
+    cost = Column(Float, nullable=False)
+    srp = Column(Float, nullable=False)
+    retail_low_stock_threshold = Column(Integer, nullable=False, default=50)
+    wholesale_low_stock_threshold = Column(Integer, nullable=False, default=50)
+    is_retail_available = Column(Boolean, nullable=False, default=True)
+    is_wholesale_available = Column(Boolean, nullable=False, default=False)
+    image_url = Column(String, nullable=True)
     branch_products = relationship("BranchProduct", back_populates="product")
     inv_report_items = relationship("InvReportItem", back_populates="product")
     analytics = relationship("AnalyticsTimeSeries", back_populates="product")
     price_history = relationship("PriceHistory", back_populates="product")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
 class BranchProduct(Base):
     __tablename__ = "branch_products"

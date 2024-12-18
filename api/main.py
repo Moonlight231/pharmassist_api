@@ -1,10 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import auth, products, branches, branch_products, inventory_reports, clients, transactions, expenses, suppliers, analytics
+from fastapi.staticfiles import StaticFiles
 
 from .database import Base, engine
 
 app = FastAPI()
+
+app.mount("/product_images", StaticFiles(directory="static/product_images"), name="product_images")
 
 Base.metadata.create_all(bind=engine)
 
