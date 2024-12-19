@@ -104,6 +104,18 @@ def add_product(
             detail=str(e)
         )
 
+def delete_image_file(image_url: str | None):
+    if not image_url:
+        return
+        
+    # Extract filename from URL
+    filename = image_url.split('/')[-1]
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    
+    # Delete file if it exists
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
 @router.put('/{product_id}', status_code=status.HTTP_200_OK)
 def update_product(
     product_id: int,
@@ -115,7 +127,11 @@ def update_product(
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    # If cost or srp is being updated, record it in price history
+    # If image_url is being updated, delete the old image
+    if product.image_url is not None and product.image_url != db_product.image_url:
+        delete_image_file(db_product.image_url)
+    
+    # Record price history if cost or srp is updated
     if product.cost is not None or product.srp is not None:
         price_history = PriceHistory(
             product_id=product_id,
@@ -141,6 +157,9 @@ def delete_product(
     db_product = db.query(Product).filter(Product.id == product_id).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
+
+    # Delete the product image if it exists
+    delete_image_file(db_product.image_url)
 
     # Get all branch products for this product
     branch_products = db.query(BranchProduct).filter(
@@ -190,7 +209,7 @@ async def upload_product_image(
         )
     
     file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in ['.jpg', '.jpeg', '.png', '.gif']:
+    if file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
         raise HTTPException(
             status_code=400,
             detail="Invalid file type"
