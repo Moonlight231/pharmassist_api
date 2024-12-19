@@ -39,10 +39,4 @@ ENV/
 *.db
 
 # Logs
-*.log
-
-# Static files
-static/apk_files/*
-static/product_images/*
-!static/apk_files/.gitkeep
-!static/product_images/.gitkeep
+*.log 
