@@ -530,5 +530,19 @@ class PriceHistory(Base):
     
     product = relationship("Product", back_populates="price_history")
 
+class AppVersion(Base):
+    __tablename__ = "app_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    version_name = Column(String, nullable=False)  # e.g., "1.0.0"
+    version_code = Column(Integer, nullable=False)  # e.g., 1
+    apk_file_path = Column(String, nullable=False)
+    release_notes = Column(String, nullable=True)
+    is_active = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.now)
+    created_by_id = Column(Integer, ForeignKey('users.id'))
+    
+    created_by = relationship("User", backref="app_versions")
+
 # Create the tables if they don't exist
 User.metadata.create_all(bind=engine)

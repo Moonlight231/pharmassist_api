@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import auth, products, branches, branch_products, inventory_reports, clients, transactions, expenses, suppliers, analytics
+from .routers import auth, products, branches, branch_products, inventory_reports, clients, transactions, expenses, suppliers, analytics, app_management
 from fastapi.staticfiles import StaticFiles
 
 from .database import Base, engine
@@ -8,6 +8,7 @@ from .database import Base, engine
 app = FastAPI()
 
 app.mount("/product_images", StaticFiles(directory="static/product_images"), name="product_images")
+app.mount("/apk_files", StaticFiles(directory="static/apk_files"), name="apk_files")
 
 Base.metadata.create_all(bind=engine)
 
@@ -38,3 +39,4 @@ app.include_router(transactions.router)
 app.include_router(expenses.router)
 app.include_router(suppliers.router)
 app.include_router(analytics.router)
+app.include_router(app_management.router)
