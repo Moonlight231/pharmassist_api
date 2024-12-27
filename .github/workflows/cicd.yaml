@@ -15,6 +15,9 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
 
+    - name: Upgrade pip, setuptools, and wheel
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
     - name: Install Dependencies
       run: |
         cd /home/pomosa/actions-runner/_work/pharmassist_api/pharmassist_api
