@@ -25,5 +25,8 @@ jobs:
         pip install --upgrade pip setuptools wheel
         pip install -r requirements.txt
         pip install "fastapi[standard]"
+    
+    - name: Run FastAPI
+      run: |
         cd api/
         fastapi run main.py
