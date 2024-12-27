@@ -25,7 +25,3 @@ jobs:
         pip install --upgrade pip setuptools wheel
         pip install -r requirements.txt
         pip install "fastapi[standard]"
-
-    - name: Restart FastAPI Service
-      run: |
-        sudo systemctl restart fastapi.service
