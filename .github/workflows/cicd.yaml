@@ -17,11 +17,6 @@ jobs:
       with:
         python-version: '3.11'  # Use a stable Python version
 
-    - name: Install Build Tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc make cmake python3-dev
-
     - name: Install Dependencies
       run: |
         cd /home/pomosa/actions-runner/_work/pharmassist_api/pharmassist_api
