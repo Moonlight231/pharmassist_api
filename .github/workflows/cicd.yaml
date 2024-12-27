@@ -2,11 +2,10 @@ name: Deploy FastAPI
 
 on:
   push:
-    branches:
-      - main  # Replace with your deployment branch if different
+    branches: [ "main" ]
 
 jobs:
-  deploy:
+  build:
     runs-on: self-hosted  # Use the self-hosted runner
 
     steps:
@@ -18,12 +17,12 @@ jobs:
       with:
         python-version: '3.13'  # Replace with your desired Python version
 
-    # - name: Install Dependencies
-    #   run: |
-    #     cd /path/to/your/fastapi/project
-    #     python -m venv venv
-    #     source venv/bin/activate
-    #     pip install -r requirements.txt
+    - name: Install Dependencies
+      run: |
+        cd /home/pomosa/actions-runner/_work/pharmassist_api/pharmassist_api
+        python -m venv venv
+        source venv/bin/activate
+        pip install -r requirements.txt
 
     # - name: Restart FastAPI Service
     #   run: |
