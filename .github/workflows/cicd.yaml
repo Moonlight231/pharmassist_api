@@ -1,0 +1,30 @@
+name: Deploy FastAPI
+
+on:
+  push:
+    branches:
+      - main  # Replace with your deployment branch if different
+
+jobs:
+  deploy:
+    runs-on: self-hosted  # Use the self-hosted runner
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.13'  # Replace with your desired Python version
+
+    # - name: Install Dependencies
+    #   run: |
+    #     cd /path/to/your/fastapi/project
+    #     python -m venv venv
+    #     source venv/bin/activate
+    #     pip install -r requirements.txt
+
+    # - name: Restart FastAPI Service
+    #   run: |
+    #     sudo systemctl restart fastapi.service
