@@ -26,10 +26,10 @@ jobs:
         pip install -r requirements.txt
         pip install "fastapi[standard]"
     
-    - name: Run FastAPI
-      run: |
-        cd /home/pomosa/actions-runner/_work/pharmassist_api/pharmassist_api
-        python -m venv venv
-        source venv/bin/activate
-        cd api/
-        fastapi run main.py
+    # - name: Run FastAPI
+    #   run: |
+    #     cd /home/pomosa/actions-runner/_work/pharmassist_api/pharmassist_api
+    #     python -m venv venv
+    #     source venv/bin/activate
+    #     cd api/
+    #     fastapi run main.py
