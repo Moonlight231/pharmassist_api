@@ -34,8 +34,6 @@ jobs:
     
     - name: Run FastAPI
       run: |
-        cd /home/pomosa/actions-runner/_work/pharmassist_api/pharmassist_api
-        python -m venv venv
-        source venv/bin/activate
+        cd /home/pomona/fast-runner/_work/pharmassist_api/pharmassist_api
         cd api/
         fastapi run main.py
