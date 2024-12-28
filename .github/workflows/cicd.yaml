@@ -30,6 +30,7 @@ jobs:
         
         # Install FastAPI standard dependencies (if needed)
         pip install "fastapi[standard]"
+        alembic upgrade head
 
     
     # - name: Run FastAPI
