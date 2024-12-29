@@ -18,14 +18,7 @@ jobs:
         cd /home/pomona/fast-runner/_work/pharmassist_api/pharmassist_api
 
         # Create a virtual environment with copies of dependencies
-        python3.11 -m venv --copies venv
-
-        # Copy libpython3.11.so.1.0 into the virtual environment
-        cp $(python3.11 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")/libpython3.11.so.1.0 venv/lib/
-
-        # Set library path
-        export LD_LIBRARY_PATH=venv/lib:$LD_LIBRARY_PATH
-
+        python -m venv --copies venv
         # Activate the virtual environment
         source venv/bin/activate
 
