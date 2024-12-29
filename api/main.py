@@ -13,8 +13,7 @@ app.mount("/apk_files", StaticFiles(directory="static/apk_files"), name="apk_fil
 Base.metadata.create_all(bind=engine)
 
 origins = [
-    "http://localhost:3000", # Adjust the port if your frontend runs on a different one.
-    "https://pomonabatangas.com",
+    "*"
 ]
 
 app.add_middleware(
