@@ -17,24 +17,21 @@ jobs:
       with:
         python-version: '3.11'  # Use a stable Python version
 
-    - name: Set up Virtual Environment and Install Dependencies
+    - name: Install Dependencies
       run: |
         # Navigate to the project directory
         cd /home/pomona/fast-runner/_work/pharmassist_api/pharmassist_api
-
-        # Create a virtual environment
-        python -m venv venv
-
-        # Activate the virtual environment
-        source venv/bin/activate
-
-        # Upgrade pip, setuptools, and wheel
+        
+        # Upgrade pip, setuptools, and wheel to the latest versions
         pip install --upgrade pip setuptools wheel
-
+        
         # Install the dependencies from requirements.txt
         pip install -r requirements.txt
+        
+        # Install FastAPI standard dependencies (if needed)
         pip install "fastapi[standard]"
 
+    
     - name: Start FastAPI
       run: |
         cd /home/pomona
