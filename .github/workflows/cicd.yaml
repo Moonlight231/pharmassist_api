@@ -41,8 +41,11 @@ jobs:
         pip install -r requirements.txt
         pip install "fastapi[standard]"
 
-    - name: Start FastAPI
+    - name: Activate Venv
       run: |
         cd /home/pomona/fast-runner/_work/pharmassist_api/pharmassist_api/api
         source ../venv/bin/activate
-        fastapi run main.py --host 0.0.0.0 --port 8000 &
+    - name: Start FASTAPI
+      run: |
+        cd /home/pomona
+        ./run_fastapi.sh
