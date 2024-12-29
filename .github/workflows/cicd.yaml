@@ -11,11 +11,16 @@ jobs:
     steps:
     - name: Checkout Code
       uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'  # Use a stable Python version
 
     - name: Set up Python and Virtual Environment
       run: |
         # Ensure Python 3.11 is available
-        python3.11 --version
+        python3 --version
 
         # Navigate to the project directory
         cd /home/pomona/fast-runner/_work/pharmassist_api/pharmassist_api
