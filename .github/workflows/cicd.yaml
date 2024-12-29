@@ -33,4 +33,6 @@ jobs:
 
     
     - name: Start FastAPI
-      run: ./run_fastapi.sh
+      run: |
+        cd /home/pomona
+        ./run_fastapi.sh
