@@ -18,7 +18,7 @@ jobs:
         cd /home/pomona/fast-runner/_work/pharmassist_api/pharmassist_api
 
         # Create a virtual environment with copies of dependencies
-        python -m venv --copies venv
+        python3 -m venv venv
         # Activate the virtual environment
         source venv/bin/activate
 
