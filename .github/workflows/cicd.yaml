@@ -32,8 +32,5 @@ jobs:
         pip install "fastapi[standard]"
 
     
-    - name: Run FastAPI
-      run: |
-        cd /home/pomona/fast-runner/_work/pharmassist_api/pharmassist_api
-        cd api/
-        fastapi run main.py
+    - name: Start FastAPI
+      run: ./run_fastapi.sh
