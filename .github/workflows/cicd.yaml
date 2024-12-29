@@ -12,25 +12,21 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Set up Python and Virtual Environment
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'  # Use a stable Python version
+
+    - name: Install Dependencies
       run: |
         # Navigate to the project directory
         cd /home/pomona/fast-runner/_work/pharmassist_api/pharmassist_api
-
-        # Create a virtual environment with copies of dependencies
-        python -m venv venv
-        # Activate the virtual environment
-        source venv/bin/activate
-
-        # Upgrade pip, setuptools, and wheel
+        
+        # Upgrade pip, setuptools, and wheel to the latest versions
         pip install --upgrade pip setuptools wheel
-
-        # Install dependencies
+        
+        # Install the dependencies from requirements.txt
         pip install -r requirements.txt
+        
+        # Install FastAPI standard dependencies (if needed)
         pip install "fastapi[standard]"
-
-    - name: Start FastAPI
-      run: |
-        cd /home/pomona/fast-runner/_work/pharmassist_api/pharmassist_api/api
-        source ../venv/bin/activate
-        fastapi run main.py --host 0.0.0.0 --port 8000 &
