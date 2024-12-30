@@ -811,7 +811,7 @@ async def get_company_overview(
     net_profit = gross_profit - total_expenses
     profit_margin = (net_profit / total_revenue * 100) if total_revenue > 0 else 0
 
-    # Calculate revenue trend
+    # Calculate revenue trend.
     revenue_trend = db.query(
         func.date(AnalyticsTimeSeries.timestamp).label('date'),
         func.sum(AnalyticsTimeSeries.value).label('value'),
