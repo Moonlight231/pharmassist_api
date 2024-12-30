@@ -202,7 +202,7 @@ async def create_profile(
             detail="Profile already exists"
         )
 
-    # Create profile.
+    # Create profile..
     new_profile = Profile(
         user_id=current_user['id'],
         **profile_data.model_dump()
