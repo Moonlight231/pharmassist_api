@@ -262,32 +262,38 @@ async def get_company_analytics(
 def get_time_series_data(db: db_dependency, start_date: datetime, end_date: datetime):
     """Get time series data for revenue, expenses, and profit"""
     revenue_data = db.query(
-        func.date_trunc('day', AnalyticsTimeSeries.timestamp).label('date'),
-        func.sum(case(
-            (AnalyticsTimeSeries.metric_name == 'revenue', AnalyticsTimeSeries.value),
-            else_=0
-        )).label('value'),
-        func.sum(case(
-            (AnalyticsTimeSeries.metric_name == 'profit', AnalyticsTimeSeries.value),
-            else_=0
-        )).label('profit'),
-        func.sum(case(
-            (AnalyticsTimeSeries.metric_name == 'expenses', AnalyticsTimeSeries.value),
-            else_=0
-        )).label('expenses')
+        func.date_trunc('day', InvReport.end_date).label('date'),
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('value')
+    ).join(
+        InvReportItem,
+        InvReport.id == InvReportItem.invreport_id
     ).filter(
-        AnalyticsTimeSeries.timestamp.between(start_date, end_date)
-    ).group_by(
-        func.date_trunc('day', AnalyticsTimeSeries.timestamp)
-    ).order_by('date').all()
+        InvReport.end_date >= start_date,
+        InvReport.end_date <= end_date
+    ).group_by('date').order_by('date').all()
+
+    expense_data = db.query(
+        func.date_trunc('day', Expense.date_created).label('date'),
+        func.sum(Expense.amount).label('value')
+    ).filter(
+        Expense.date_created >= start_date,
+        Expense.date_created <= end_date
+    ).group_by('date').order_by('date').all()
+
+    # Calculate daily profit
+    profit_trend = []
+    for date in (start_date + timedelta(n) for n in range((end_date - start_date).days + 1)):
+        daily_revenue = next((r.value for r in revenue_data if r.date.date() == date.date()), 0)
+        daily_expense = next((e.value for e in expense_data if e.date.date() == date.date()), 0)
+        profit_trend.append({
+            "timestamp": date,
+            "value": daily_revenue - daily_expense
+        })
 
     return {
-        "revenue": [{
-            "timestamp": entry.date,
-            "value": float(entry.value),
-            "profit": float(entry.profit),
-            "expenses": float(entry.expenses)
-        } for entry in revenue_data]
+        "revenue": [{"timestamp": r.date, "value": r.value} for r in revenue_data],
+        "expenses": [{"timestamp": e.date, "value": e.value} for e in expense_data],
+        "profit": profit_trend
     }
 
 def calculate_profit_margin(product_data) -> float:
@@ -807,7 +813,7 @@ async def get_company_overview(
 
     # Calculate revenue trend
     revenue_trend = db.query(
-        AnalyticsTimeSeries.timestamp,
+        func.date(AnalyticsTimeSeries.timestamp).label('date'),
         func.sum(AnalyticsTimeSeries.value).label('value'),
         func.sum(AnalyticsTimeSeries.value).label('gross_value'),
         func.coalesce(func.sum(Expense.amount), 0).label('expenses')
@@ -821,9 +827,9 @@ async def get_company_overview(
         AnalyticsTimeSeries.branch_id.in_(branch_ids),
         AnalyticsTimeSeries.timestamp.between(start_date, end_date)
     ).group_by(
-        AnalyticsTimeSeries.timestamp
+        func.date(AnalyticsTimeSeries.timestamp)
     ).order_by(
-        AnalyticsTimeSeries.timestamp
+        func.date(AnalyticsTimeSeries.timestamp)
     ).all()
 
     # First, get the total quantity per branch and product
@@ -916,9 +922,9 @@ async def get_company_overview(
             "profit_margin": float(p.profit / p.revenue * 100) if p.revenue else 0
         } for p in top_products],
         "revenue_trend": [{
-            "timestamp": entry.timestamp.isoformat(),
+            "timestamp": entry.date.isoformat(),
             "value": float(entry.value),
-            "profit": float(entry.profit),
+            "profit": float(entry.gross_value - entry.expenses),
             "expenses": float(entry.expenses)
         } for entry in revenue_trend],
         "inventory": {
