@@ -14,7 +14,7 @@ Base.metadata.create_all(bind=engine)
 
 origins = [
     "http://localhost:3000", # Adjust the port if your frontend runs on a different one.
-    "https://pomonabatangas.com",
+    "https://pomonabatangas.com", "*"
 ]
 
 app.add_middleware(
