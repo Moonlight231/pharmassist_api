@@ -813,7 +813,7 @@ async def get_company_overview(
 
     # Calculate revenue trend
     revenue_trend = db.query(
-        AnalyticsTimeSeries.timestamp,
+        func.date(AnalyticsTimeSeries.timestamp).label('date'),
         func.sum(AnalyticsTimeSeries.value).label('value'),
         func.sum(AnalyticsTimeSeries.value).label('gross_value'),
         func.coalesce(func.sum(Expense.amount), 0).label('expenses')
@@ -827,9 +827,9 @@ async def get_company_overview(
         AnalyticsTimeSeries.branch_id.in_(branch_ids),
         AnalyticsTimeSeries.timestamp.between(start_date, end_date)
     ).group_by(
-        AnalyticsTimeSeries.timestamp
+        func.date(AnalyticsTimeSeries.timestamp)
     ).order_by(
-        AnalyticsTimeSeries.timestamp
+        func.date(AnalyticsTimeSeries.timestamp)
     ).all()
 
     # First, get the total quantity per branch and product
@@ -922,7 +922,7 @@ async def get_company_overview(
             "profit_margin": float(p.profit / p.revenue * 100) if p.revenue else 0
         } for p in top_products],
         "revenue_trend": [{
-            "timestamp": entry.timestamp.isoformat(),
+            "timestamp": entry.date.isoformat(),
             "value": float(entry.value),
             "profit": float(entry.gross_value - entry.expenses),
             "expenses": float(entry.expenses)
