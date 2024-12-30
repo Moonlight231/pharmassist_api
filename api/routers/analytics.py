@@ -262,38 +262,32 @@ async def get_company_analytics(
 def get_time_series_data(db: db_dependency, start_date: datetime, end_date: datetime):
     """Get time series data for revenue, expenses, and profit"""
     revenue_data = db.query(
-        func.date_trunc('day', InvReport.end_date).label('date'),
-        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('value')
-    ).join(
-        InvReportItem,
-        InvReport.id == InvReportItem.invreport_id
+        func.date_trunc('day', AnalyticsTimeSeries.timestamp).label('date'),
+        func.sum(case(
+            (AnalyticsTimeSeries.metric_name == 'revenue', AnalyticsTimeSeries.value),
+            else_=0
+        )).label('value'),
+        func.sum(case(
+            (AnalyticsTimeSeries.metric_name == 'profit', AnalyticsTimeSeries.value),
+            else_=0
+        )).label('profit'),
+        func.sum(case(
+            (AnalyticsTimeSeries.metric_name == 'expenses', AnalyticsTimeSeries.value),
+            else_=0
+        )).label('expenses')
     ).filter(
-        InvReport.end_date >= start_date,
-        InvReport.end_date <= end_date
-    ).group_by('date').order_by('date').all()
-
-    expense_data = db.query(
-        func.date_trunc('day', Expense.date_created).label('date'),
-        func.sum(Expense.amount).label('value')
-    ).filter(
-        Expense.date_created >= start_date,
-        Expense.date_created <= end_date
-    ).group_by('date').order_by('date').all()
-
-    # Calculate daily profit
-    profit_trend = []
-    for date in (start_date + timedelta(n) for n in range((end_date - start_date).days + 1)):
-        daily_revenue = next((r.value for r in revenue_data if r.date.date() == date.date()), 0)
-        daily_expense = next((e.value for e in expense_data if e.date.date() == date.date()), 0)
-        profit_trend.append({
-            "timestamp": date,
-            "value": daily_revenue - daily_expense
-        })
+        AnalyticsTimeSeries.timestamp.between(start_date, end_date)
+    ).group_by(
+        func.date_trunc('day', AnalyticsTimeSeries.timestamp)
+    ).order_by('date').all()
 
     return {
-        "revenue": [{"timestamp": r.date, "value": r.value} for r in revenue_data],
-        "expenses": [{"timestamp": e.date, "value": e.value} for e in expense_data],
-        "profit": profit_trend
+        "revenue": [{
+            "timestamp": entry.date,
+            "value": float(entry.value),
+            "profit": float(entry.profit),
+            "expenses": float(entry.expenses)
+        } for entry in revenue_data]
     }
 
 def calculate_profit_margin(product_data) -> float:
@@ -924,7 +918,7 @@ async def get_company_overview(
         "revenue_trend": [{
             "timestamp": entry.timestamp.isoformat(),
             "value": float(entry.value),
-            "profit": float(entry.gross_value - entry.expenses),
+            "profit": float(entry.profit),
             "expenses": float(entry.expenses)
         } for entry in revenue_trend],
         "inventory": {
