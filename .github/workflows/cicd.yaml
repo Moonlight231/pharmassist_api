@@ -2,21 +2,21 @@ name: Deploy FastAPI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   build:
-    runs-on: self-hosted 
+    runs-on: self-hosted
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'  # Use a stable Python version
-    - name: Start FASTAPI
-      run: |
-        cd /home/pomona
-        ./run_fastapi.sh
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11" # Use a stable Python version
+      - name: Start FASTAPI
+        run: |
+          cd /home/pomona
+          ./run_fastapi.sh

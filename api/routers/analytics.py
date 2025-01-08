@@ -261,7 +261,11 @@ async def get_company_analytics(
 
 def get_time_series_data(db: db_dependency, start_date: datetime, end_date: datetime):
     """Get time series data for revenue, expenses, and profit"""
-    revenue_data = db.query(
+    # Create a date range for all days
+    date_range = [(start_date + timedelta(n)).date() for n in range((end_date - start_date).days + 1)]
+    
+    # Get revenue data
+    revenue_data = dict(db.query(
         func.date_trunc('day', InvReport.end_date).label('date'),
         func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('value')
     ).join(
@@ -270,30 +274,33 @@ def get_time_series_data(db: db_dependency, start_date: datetime, end_date: date
     ).filter(
         InvReport.end_date >= start_date,
         InvReport.end_date <= end_date
-    ).group_by('date').order_by('date').all()
+    ).group_by('date').all())
 
-    expense_data = db.query(
+    # Get expense data
+    expense_data = dict(db.query(
         func.date_trunc('day', Expense.date_created).label('date'),
         func.sum(Expense.amount).label('value')
     ).filter(
         Expense.date_created >= start_date,
         Expense.date_created <= end_date
-    ).group_by('date').order_by('date').all()
+    ).group_by('date').all())
 
-    # Calculate daily profit
-    profit_trend = []
-    for date in (start_date + timedelta(n) for n in range((end_date - start_date).days + 1)):
-        daily_revenue = next((r.value for r in revenue_data if r.date.date() == date.date()), 0)
-        daily_expense = next((e.value for e in expense_data if e.date.date() == date.date()), 0)
-        profit_trend.append({
+    # Combine data for all dates
+    combined_data = []
+    for date in date_range:
+        daily_revenue = revenue_data.get(date, 0)
+        daily_expense = expense_data.get(date, 0)
+        combined_data.append({
             "timestamp": date,
-            "value": daily_revenue - daily_expense
+            "value": daily_revenue,
+            "expenses": daily_expense,
+            "profit": daily_revenue - daily_expense
         })
 
     return {
-        "revenue": [{"timestamp": r.date, "value": r.value} for r in revenue_data],
-        "expenses": [{"timestamp": e.date, "value": e.value} for e in expense_data],
-        "profit": profit_trend
+        "revenue": combined_data,
+        "expenses": combined_data,
+        "profit": combined_data
     }
 
 def calculate_profit_margin(product_data) -> float:
