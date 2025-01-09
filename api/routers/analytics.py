@@ -265,7 +265,8 @@ def get_time_series_data(db: db_dependency, start_date: datetime, end_date: date
     date_range = [(start_date + timedelta(n)).date() for n in range((end_date - start_date).days + 1)]
     
     # Get revenue data with proper grouping
-    revenue_data = dict(db.query(
+    revenue_data = {}
+    revenue_query = db.query(
         func.date_trunc('day', InvReport.end_date).label('date'),
         func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('value')
     ).join(
@@ -274,21 +275,27 @@ def get_time_series_data(db: db_dependency, start_date: datetime, end_date: date
     ).filter(
         InvReport.end_date >= start_date,
         InvReport.end_date <= end_date
-    ).group_by('date').all())
+    ).group_by('date').all()
 
-    # Get expense data with proper scope handling
-    expense_data = dict(db.query(
-        func.date_trunc('day', Expense.date_created).label('date'),
+    for rev in revenue_query:
+        revenue_data[rev.date.date()] = rev.value or 0
+
+    # Get expense data directly from expenses table
+    expense_data = {}
+    expense_query = db.query(
+        Expense.date_created.label('date'),
         func.sum(case(
             (Expense.scope == 'company_wide', Expense.amount / db.query(func.count(Branch.id)).scalar()),
-            (Expense.scope == 'main_office', 0),  # Main office expenses handled separately
+            (Expense.scope == 'main_office', Expense.amount),
             else_=Expense.amount
         )).label('value')
     ).filter(
         Expense.date_created >= start_date,
-        Expense.date_created <= end_date,
-        Expense.scope.in_(['branch', 'company_wide'])  # Only include relevant scopes
-    ).group_by('date').all())
+        Expense.date_created <= end_date
+    ).group_by(Expense.date_created).all()
+
+    for exp in expense_query:
+        expense_data[exp.date] = exp.value or 0
 
     # Combine data for all dates
     combined_data = []
