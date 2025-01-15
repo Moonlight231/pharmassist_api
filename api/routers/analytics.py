@@ -805,29 +805,27 @@ async def get_company_overview(
     branch_performance = db.query(
         Branch.id.label('branch_id'),
         Branch.branch_name,
-        func.sum(InvReportItem.offtake).label('total_sales'),
-        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('revenue'),
-        func.sum(case(
-            (Expense.scope == 'company_wide', 
-             Expense.amount / db.query(func.count(Branch.id)).scalar()),
-            (Expense.scope == 'main_office', Expense.amount),
-            else_=Expense.amount
-        )).label('total_expenses')
-    ).join(
-        InvReport, InvReport.branch_id == Branch.id
-    ).join(
-        InvReportItem, InvReportItem.invreport_id == InvReport.id
-    ).outerjoin(
-        Expense, and_(
-            or_(
+        func.coalesce(func.sum(InvReportItem.offtake), 0).label('total_sales'),
+        func.coalesce(func.sum(InvReportItem.offtake * InvReportItem.current_srp), 0).label('revenue'),
+        func.coalesce(
+            db.query(func.sum(Expense.amount))
+            .filter(
                 Expense.branch_id == Branch.id,
-                Expense.scope.in_(['company_wide', 'main_office'])
-            ),
-            Expense.date_created.between(start_date, end_date)
-        )
+                Expense.scope == 'branch',
+                Expense.date_created.between(start_date, end_date)
+            ).as_scalar(),
+            0
+        ).label('total_expenses')
+    ).join(
+        InvReport, InvReport.branch_id == Branch.id, isouter=True
+    ).join(
+        InvReportItem, InvReportItem.invreport_id == InvReport.id, isouter=True
     ).filter(
         Branch.id.in_(branch_ids),
-        InvReport.created_at.between(start_date, end_date)
+        or_(
+            InvReport.created_at.between(start_date, end_date),
+            InvReport.created_at.is_(None)
+        )
     ).group_by(
         Branch.id,
         Branch.branch_name
