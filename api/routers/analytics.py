@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, desc, and_, case, distinct, select
+from sqlalchemy import func, desc, and_, case, distinct, select, or_
 from datetime import datetime, timedelta, date
 from typing import List, Optional, Annotated
 from pydantic import BaseModel, Field
@@ -141,7 +141,12 @@ async def get_company_analytics(
     # Get expense data
     expense_data = db.query(
         Expense.branch_id,
-        func.sum(Expense.amount).label('total_expenses')
+        func.sum(case(
+            (Expense.scope == 'company_wide', 
+             Expense.amount / db.query(func.count(Branch.id)).scalar()),
+            (Expense.scope == 'main_office', Expense.amount),
+            else_=Expense.amount
+        )).label('total_expenses')
     ).filter(
         Expense.date_created >= start_date,
         Expense.date_created <= end_date
@@ -254,9 +259,24 @@ async def get_company_analytics(
             }
             for p in product_performance
         ],
-        "revenue_trend": time_series["revenue"],
-        "expense_trend": time_series["expenses"],
-        "profit_trend": time_series["profit"]
+        "revenue_trend": [{
+            "timestamp": entry["timestamp"],
+            "value": float(entry["value"]),
+            "profit": float(entry["profit"]),
+            "expenses": float(entry["expenses"])
+        } for entry in time_series["revenue"]],
+        "expense_trend": [{
+            "timestamp": entry["timestamp"],
+            "value": float(entry["value"]),
+            "profit": float(entry["profit"]),
+            "expenses": float(entry["expenses"])
+        } for entry in time_series["expenses"]],
+        "profit_trend": [{
+            "timestamp": entry["timestamp"],
+            "value": float(entry["value"]),
+            "profit": float(entry["profit"]),
+            "expenses": float(entry["expenses"])
+        } for entry in time_series["profit"]]
     }
 
 def get_time_series_data(db: db_dependency, start_date: datetime, end_date: datetime):
@@ -285,8 +305,12 @@ def get_time_series_data(db: db_dependency, start_date: datetime, end_date: date
     expense_query = db.query(
         Expense.date_created.label('date'),
         func.sum(case(
-            (Expense.scope == 'company_wide', Expense.amount / db.query(func.count(Branch.id)).scalar()),
+            # Company wide expenses divided by branch count
+            (Expense.scope == 'company_wide', 
+             Expense.amount / db.query(func.count(Branch.id)).scalar()),
+            # Main office expenses should NOT be divided
             (Expense.scope == 'main_office', Expense.amount),
+            # Branch specific expenses as is
             else_=Expense.amount
         )).label('value')
     ).filter(
@@ -294,7 +318,9 @@ def get_time_series_data(db: db_dependency, start_date: datetime, end_date: date
         Expense.date_created <= end_date
     ).group_by(Expense.date_created).all()
 
+    # Debug print to check values
     for exp in expense_query:
+        print(f"Date: {exp.date}, Amount: {exp.value}")
         expense_data[exp.date] = exp.value or 0
 
     # Combine data for all dates
@@ -821,7 +847,7 @@ async def get_company_overview(
         func.sum(InvReportItem.offtake * InvReportItem.current_srp).desc()
     ).limit(5).all()
 
-    # Rest of the existing code
+    
     total_revenue = float(sales_data.total_revenue or 0)
     gross_profit = float(sales_data.gross_profit or 0)
     total_expenses = db.query(func.sum(Expense.amount)).filter(
@@ -831,26 +857,59 @@ async def get_company_overview(
     net_profit = gross_profit - total_expenses
     profit_margin = (net_profit / total_revenue * 100) if total_revenue > 0 else 0
 
-    # Calculate revenue trend.
-    revenue_trend = db.query(
-        func.date(AnalyticsTimeSeries.timestamp).label('date'),
-        func.sum(AnalyticsTimeSeries.value).label('value'),
-        func.sum(AnalyticsTimeSeries.value).label('gross_value'),
-        func.coalesce(func.sum(Expense.amount), 0).label('expenses')
-    ).outerjoin(
-        Expense,
-        and_(
-            func.date(Expense.date_created) == func.date(AnalyticsTimeSeries.timestamp),
-            Expense.branch_id.in_(branch_ids)
-        )
+    # Calculate revenue trend
+    revenue_trend = []
+    
+    # Get revenue data directly from InvReport
+    revenue_data = db.query(
+        func.date(InvReport.created_at).label('date'),
+        func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('value')
+    ).join(
+        InvReportItem,
+        InvReport.id == InvReportItem.invreport_id
     ).filter(
-        AnalyticsTimeSeries.branch_id.in_(branch_ids),
-        AnalyticsTimeSeries.timestamp.between(start_date, end_date)
+        InvReport.branch_id.in_(branch_ids),
+        InvReport.created_at.between(start_date, end_date)
     ).group_by(
-        func.date(AnalyticsTimeSeries.timestamp)
+        func.date(InvReport.created_at)
     ).order_by(
-        func.date(AnalyticsTimeSeries.timestamp)
+        func.date(InvReport.created_at)
     ).all()
+
+    # Get expense data directly from expenses table
+    expense_data = db.query(
+        Expense.date_created.label('date'),
+        func.sum(case(
+            (Expense.scope == 'company_wide', 
+             Expense.amount / db.query(func.count(Branch.id)).scalar()),
+            (Expense.scope == 'main_office', Expense.amount),
+            else_=Expense.amount
+        )).label('value')
+    ).filter(
+        Expense.date_created.between(start_date, end_date),
+        or_(
+            Expense.branch_id.in_(branch_ids),
+            Expense.scope.in_(['company_wide', 'main_office'])
+        )
+    ).group_by(
+        Expense.date_created
+    ).all()
+
+    # Convert to dictionaries for easier lookup
+    expense_dict = {exp.date: exp.value for exp in expense_data}
+    
+    # Combine revenue and expense data
+    for rev in revenue_data:
+        date = rev.date
+        revenue = rev.value or 0
+        expense = expense_dict.get(date, 0)
+        
+        revenue_trend.append({
+            "timestamp": date,
+            "value": revenue,
+            "profit": revenue - expense,
+            "expenses": expense
+        })
 
     # First, get the total quantity per branch and product
     product_quantities = db.query(
@@ -942,10 +1001,10 @@ async def get_company_overview(
             "profit_margin": float(p.profit / p.revenue * 100) if p.revenue else 0
         } for p in top_products],
         "revenue_trend": [{
-            "timestamp": entry.date.isoformat(),
-            "value": float(entry.value),
-            "profit": float(entry.gross_value - entry.expenses),
-            "expenses": float(entry.expenses)
+            "timestamp": entry["timestamp"],
+            "value": float(entry["value"]),
+            "profit": float(entry["profit"]),
+            "expenses": float(entry["expenses"])
         } for entry in revenue_trend],
         "inventory": {
             "total_branches": int(inventory_stats.total_branches or 0),
