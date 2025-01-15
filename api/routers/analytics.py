@@ -807,14 +807,22 @@ async def get_company_overview(
         Branch.branch_name,
         func.sum(InvReportItem.offtake).label('total_sales'),
         func.sum(InvReportItem.offtake * InvReportItem.current_srp).label('revenue'),
-        func.sum(Expense.amount).label('total_expenses')
+        func.sum(case(
+            (Expense.scope == 'company_wide', 
+             Expense.amount / db.query(func.count(Branch.id)).scalar()),
+            (Expense.scope == 'main_office', Expense.amount),
+            else_=Expense.amount
+        )).label('total_expenses')
     ).join(
         InvReport, InvReport.branch_id == Branch.id
     ).join(
         InvReportItem, InvReportItem.invreport_id == InvReport.id
     ).outerjoin(
         Expense, and_(
-            Expense.branch_id == Branch.id,
+            or_(
+                Expense.branch_id == Branch.id,
+                Expense.scope.in_(['company_wide', 'main_office'])
+            ),
             Expense.date_created.between(start_date, end_date)
         )
     ).filter(
