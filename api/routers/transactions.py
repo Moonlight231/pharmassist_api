@@ -57,7 +57,7 @@ class TransactionResponse(BaseModel):
 
     @computed_field
     def balance(self) -> float:
-        return self.total_amount - self.amount_paid
+        return round(self.total_amount - self.amount_paid, 2)
 
     @computed_field
     def is_overdue(self) -> bool:
@@ -288,8 +288,8 @@ def void_transaction(
     transaction.payment_status = 'pending'
     
     # Update client balance - only unpaid amount if any remains
-    if transaction.balance > 0:
-        transaction.client.current_balance -= transaction.balance
+    if round(transaction.balance, 2) > 0:
+        transaction.client.current_balance -= round(transaction.balance, 2)
     
     transaction.void_reason = void_data.reason
     transaction.is_void = True
@@ -320,7 +320,7 @@ def add_payment(
         )
     
     # Validate payment amount
-    remaining_balance = transaction.balance
+    remaining_balance = round(transaction.balance, 2)
     if payment.amount > remaining_balance:
         raise HTTPException(
             status_code=400,

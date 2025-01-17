@@ -448,7 +448,7 @@ class Transaction(Base):
 
     @property
     def balance(self):
-        return self.total_amount - self.amount_paid
+        return round(self.total_amount - self.amount_paid, 2)
 
     @property
     def is_overdue(self):
