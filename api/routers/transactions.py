@@ -160,20 +160,20 @@ def create_transaction(
     # Set payment status based on initial payment
     if transaction.initial_payment >= total_amount:
         payment_status = 'paid'
-        amount_paid = total_amount  # Cap at total amount to prevent overpayment
+        amount_paid = round(total_amount, 2)  # Cap at total amount to prevent overpayment
     elif transaction.initial_payment > 0:
         payment_status = 'partial'
-        amount_paid = transaction.initial_payment
+        amount_paid = round(transaction.initial_payment, 2)
     else:
         payment_status = 'pending'
-        amount_paid = 0
+        amount_paid = 0.0
     
-    new_transaction.total_amount = total_amount
+    new_transaction.total_amount = round(total_amount, 2)
     new_transaction.amount_paid = amount_paid
     new_transaction.payment_status = payment_status
     
     # Update client balance with remaining amount
-    client.current_balance += remaining_balance
+    client.current_balance = round(client.current_balance + remaining_balance, 2)
     
     # First commit the transaction to get the ID
     db.add(new_transaction)
@@ -331,7 +331,7 @@ def add_payment(
     new_payment = Payment(
         transaction_id=transaction.id,
         client_id=transaction.client_id,
-        amount=payment.amount,
+        amount=round(payment.amount, 2),
         payment_date=payment.payment_date or date.today(),
         recorded_by_id=user['id']
     )

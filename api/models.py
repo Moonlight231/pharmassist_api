@@ -469,8 +469,8 @@ class TransactionItem(Base):
     product = relationship("Product")
 
     def calculate_prices(self, markup_percentage: float):
-        self.markup_price = self.base_price * (1 + markup_percentage)
-        self.total_amount = self.markup_price * self.quantity
+        self.markup_price = round(self.base_price * (1 + markup_percentage), 2)
+        self.total_amount = round(self.markup_price * self.quantity, 2)
 
 class Payment(Base):
     __tablename__ = "payments"
