@@ -41,6 +41,7 @@ class BranchProductResponse(BranchProductBase):
     product_name: str
     days_in_low_stock: int
     low_stock_since: Optional[datetime]
+    image_url: Optional[str]
 
     model_config = ConfigDict(
         from_attributes=True
@@ -187,7 +188,8 @@ def get_branch_products(
                 "wholesale_low_stock_threshold": product.wholesale_low_stock_threshold,
                 "product_name": product.name,
                 "days_in_low_stock": bp.days_in_low_stock,
-                "low_stock_since": bp.low_stock_since
+                "low_stock_since": bp.low_stock_since,
+                "image_url": product.image_url
             }
             response.append(response_item)
     
