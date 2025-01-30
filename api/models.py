@@ -155,6 +155,36 @@ class InvReport(Base):
     def is_viewed(self) -> bool:
         return self.viewed_by is not None
 
+    @property
+    def items_count(self) -> int:
+        if self.items is None:
+            return 0
+        return len(self.items)
+
+    @property
+    def products_with_delivery(self) -> int:
+        if not self.items:
+            return 0
+        return len({item.product_id for item in self.items if item.deliver > 0})
+
+    @property
+    def products_with_transfer(self) -> int:
+        if not self.items:
+            return 0
+        return len({item.product_id for item in self.items if item.transfer > 0})
+
+    @property
+    def products_with_pullout(self) -> int:
+        if not self.items:
+            return 0
+        return len({item.product_id for item in self.items if item.pull_out > 0})
+
+    @property
+    def products_with_offtake(self) -> int:
+        if not self.items:
+            return 0
+        return len({item.product_id for item in self.items if item.offtake > 0})
+
 class InvReportItem(Base):
     __tablename__ = "invreport_items"
 

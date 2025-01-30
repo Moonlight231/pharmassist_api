@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 import sqlalchemy as sa
 from typing import List, Optional, Annotated
 from pydantic import BaseModel, computed_field
@@ -142,6 +142,31 @@ class InvReportResponse(BaseModel):
     @computed_field
     def items_count(self) -> int:
         return len(self.items)
+
+    @computed_field
+    def branch_name(self) -> str:
+        return self.branch.branch_name if self.branch else "Unknown Branch"
+
+    @computed_field
+    def is_viewed(self) -> bool:
+        return self.viewed_by is not None
+
+    class Config:
+        from_attributes = True
+
+class InvReportSummaryResponse(BaseModel):
+    id: int
+    branch_id: int
+    created_at: datetime
+    start_date: datetime
+    end_date: datetime
+    branch: Optional[BranchResponse]
+    viewed_by: Optional[int] = None
+    products_with_delivery: int
+    products_with_transfer: int
+    products_with_pullout: int
+    products_with_offtake: int
+    items_count: int
 
     @computed_field
     def branch_name(self) -> str:
@@ -509,7 +534,7 @@ def get_inventory_report(
     
     return report
 
-@router.get('/', response_model=List[InvReportResponse])
+@router.get('/', response_model=List[InvReportSummaryResponse])
 def get_all_inventory_reports(
     db: db_dependency,
     user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
@@ -519,26 +544,21 @@ def get_all_inventory_reports(
     query = (
         db.query(InvReport)
         .options(
-            joinedload(InvReport.items.of_type(InvReportItem))
-            .joinedload(InvReportItem.product),
-            joinedload(InvReport.branch)
+            selectinload(InvReport.branch),
+            selectinload(InvReport.items).joinedload(InvReportItem.product)
         )
+        .order_by(InvReport.created_at.desc())
     )
     
     # Filter by branch for non-admin users
     if user['role'] in [UserRole.PHARMACIST.value, UserRole.WHOLESALER.value]:
         query = query.filter(InvReport.branch_id == user['branch_id'])
     
-    
-    reports = query.order_by(InvReport.created_at.desc()).offset(skip).limit(limit).all()
-    
-    # Sort items in each report by product name
-    for report in reports:
-        report.items.sort(key=lambda x: x.product.name)
+    reports = query.offset(skip).limit(limit).all()
     
     return reports
 
-@router.get('/branch/{branch_id}', response_model=List[InvReportResponse])
+@router.get('/branch/{branch_id}', response_model=List[InvReportSummaryResponse])
 def get_branch_inventory_reports(
     branch_id: int,
     db: db_dependency,
@@ -556,9 +576,7 @@ def get_branch_inventory_reports(
     reports = (
         db.query(InvReport)
         .options(
-            joinedload(InvReport.items.of_type(InvReportItem))
-            .joinedload(InvReportItem.product),
-            joinedload(InvReport.branch)
+            selectinload(InvReport.branch)
         )
         .filter(InvReport.branch_id == branch_id)
         .order_by(InvReport.created_at.desc())
@@ -566,10 +584,6 @@ def get_branch_inventory_reports(
         .limit(limit)
         .all()
     )
-    
-    # Sort items in each report by product name
-    for report in reports:
-        report.items.sort(key=lambda x: x.product.name)
     
     return reports
 
