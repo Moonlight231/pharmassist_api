@@ -137,19 +137,19 @@ class InvReportResponse(BaseModel):
     end_date: datetime
     items: List[InvReportItemResponse]
     branch: Optional[BranchResponse]
-    viewed_by: Optional[int] = None
-
-    @computed_field
-    def items_count(self) -> int:
-        return len(self.items)
+    items_count: int
+    products_with_delivery: int
+    products_with_transfer: int
+    products_with_pullout: int
+    products_with_offtake: int
+    total_offtake_value: float
+    is_viewed: bool
+    viewed_by: Optional[int]
 
     @computed_field
     def branch_name(self) -> str:
         return self.branch.branch_name if self.branch else "Unknown Branch"
 
-    @computed_field
-    def is_viewed(self) -> bool:
-        return self.viewed_by is not None
 
     class Config:
         from_attributes = True
@@ -464,6 +464,29 @@ def create_inventory_report(
         # Update final quantities after all operations
         update_branch_product_quantity(db, report.branch_id, item_data.product_id)
     
+    # Calculate all report metrics before commit
+    new_report.items_count = len(new_report.items)
+    new_report.products_with_delivery = len([
+        item for item in new_report.items 
+        if any(b.batch_type == 'delivery' for b in item.batches)
+    ])
+    new_report.products_with_transfer = len([
+        item for item in new_report.items 
+        if any(b.batch_type == 'transfer' for b in item.batches)
+    ])
+    new_report.products_with_pullout = len([
+        item for item in new_report.items 
+        if any(b.batch_type == 'pull_out' for b in item.batches)
+    ])
+    new_report.products_with_offtake = len([
+        item for item in new_report.items 
+        if item.offtake > 0
+    ])
+    new_report.total_offtake_value = round(sum(
+        item.offtake * item.current_srp 
+        for item in new_report.items
+    ), 2)
+
     try:
         db.commit()
     except Exception as e:
@@ -508,7 +531,8 @@ def get_inventory_report(
         db.query(InvReport)
         .options(
             joinedload(InvReport.items.of_type(InvReportItem))
-            .joinedload(InvReportItem.product)
+            .joinedload(InvReportItem.product),
+            joinedload(InvReport.branch)
         )
         .filter(InvReport.id == report_id)
         .first()
@@ -544,8 +568,7 @@ def get_all_inventory_reports(
     query = (
         db.query(InvReport)
         .options(
-            selectinload(InvReport.branch),
-            selectinload(InvReport.items).joinedload(InvReportItem.product)
+            selectinload(InvReport.branch)
         )
         .order_by(InvReport.created_at.desc())
     )
