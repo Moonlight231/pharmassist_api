@@ -553,7 +553,7 @@ def get_inventory_report(
         report.viewed_by = user['id']
         db.commit()
     
-    # Sort items by product name
+    # Sort items by product name..
     report.items.sort(key=lambda x: x.product.name)
     
     return report
