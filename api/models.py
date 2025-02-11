@@ -230,6 +230,7 @@ class ExpenseType(str, Enum):
     RENT = "rent"
     MARKETING = "marketing"
     INVENTORY = "inventory"
+    TRANSPORTATION = "transportation"
     OTHERS = "others"
 
 class Expense(Base):
@@ -240,8 +241,6 @@ class Expense(Base):
     type = Column(String, nullable=False)
     amount = Column(Float, nullable=False)
     date_created = Column(Date, default=date.today)
-    description = Column(String)
-    vendor = Column(String)
     scope = Column(String, nullable=False, default=ExpenseScope.BRANCH)
     branch_id = Column(Integer, ForeignKey('branches.id'), nullable=True)
     created_by_id = Column(Integer, ForeignKey('users.id'))

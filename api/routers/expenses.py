@@ -17,8 +17,6 @@ class ExpenseBase(BaseModel):
     name: str
     type: ExpenseType
     amount: float = Field(gt=0)
-    description: Optional[str] = None
-    vendor: Optional[str] = None
     scope: ExpenseScope = ExpenseScope.BRANCH
     branch_id: Optional[int] = None
     date_created: Optional[date] = None
@@ -30,8 +28,6 @@ class ExpenseUpdate(BaseModel):
     name: Optional[str] = None
     type: Optional[ExpenseType] = None
     amount: Optional[float] = Field(gt=0, default=None)
-    description: Optional[str] = None
-    vendor: Optional[str] = None
     date_created: Optional[date] = None
 
 class BranchResponse(BaseModel):
@@ -67,7 +63,7 @@ class ExpenseAnalytics(BaseModel):
 def create_expense(
     expense: ExpenseCreate,
     db: db_dependency,
-    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))]
+    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
     db_expense = Expense(
         **expense.model_dump(),
@@ -90,7 +86,7 @@ def create_expense(
 @router.get("/", response_model=List[ExpenseResponse])
 def get_expenses(
     db: db_dependency,
-    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
+    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
     skip: int = 0,
     limit: int = 100,
     branch_id: Optional[int] = None,
@@ -117,7 +113,7 @@ def get_expenses(
 @router.get("/analytics")
 def get_expense_analytics(
     db: db_dependency,
-    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))],
+    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))],
     branch_id: Optional[int] = None,
     days: int = 30
 ):
@@ -177,7 +173,7 @@ def get_expense_analytics(
 def get_expense(
     expense_id: int,
     db: db_dependency,
-    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))]
+    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
     expense = db.query(Expense).filter(Expense.id == expense_id).first()
     if not expense:
@@ -197,7 +193,7 @@ def update_expense(
     expense_id: int,
     expense_update: ExpenseUpdate,
     db: db_dependency,
-    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))]
+    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
     expense = db.query(Expense).filter(Expense.id == expense_id).first()
     if not expense:
@@ -221,7 +217,7 @@ def update_expense(
 def delete_expense(
     expense_id: int,
     db: db_dependency,
-    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST]))]
+    current_user: Annotated[dict, Depends(role_required([UserRole.ADMIN, UserRole.PHARMACIST, UserRole.WHOLESALER]))]
 ):
     expense = db.query(Expense).filter(Expense.id == expense_id).first()
     if not expense:
