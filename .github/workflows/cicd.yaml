@@ -9,13 +9,6 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11" # Use a stable Python version
       - name: Start FASTAPI
         run: |
           cd /home/pomona
