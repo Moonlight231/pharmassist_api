@@ -16,6 +16,7 @@ router = APIRouter(
 class TransactionItemBase(BaseModel):
     product_id: int
     quantity: int = Field(gt=0)
+    base_price: float = Field(gt=0)
 
 class TransactionCreate(BaseModel):
     client_id: int
@@ -142,7 +143,7 @@ def create_transaction(
         transaction_item = TransactionItem(
             product_id=item.product_id,
             quantity=item.quantity,
-            base_price=branch_product.product.cost
+            base_price=item.base_price
         )
         transaction_item.calculate_prices(markup)
         
