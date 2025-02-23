@@ -111,7 +111,7 @@ def create_transaction(
     # Generate reference number
     reference_number = Transaction.generate_reference(db, user['branch_id'])
     
-    # Create transaction
+    # Create transactions
     new_transaction = Transaction(
         client_id=client.id,
         branch_id=user['branch_id'],
